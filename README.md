@@ -34,7 +34,6 @@ DeepTHULAC基于实验室自研BERT，并利用我们整合的目前世界上规
 ### 分词
 
 ```python
-import os
 from deepthulac.seg.model import Seg
 from deepthulac.utils import load_lines, store_lines
 
