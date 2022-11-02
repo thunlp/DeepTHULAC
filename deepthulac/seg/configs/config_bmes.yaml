@@ -1,0 +1,16 @@
+pretrained_bert_model: custom_pretrained
+# hyper-parameter
+learning_rate: 1.0e-05
+weight_decay: 0.01
+clip_grad: 5
+
+batch_size: 16
+
+labels:
+  - B
+  - M
+  - E
+  - S
+use_crf: True
+
+part_data: True

@@ -1,0 +1,12 @@
+*/
+*.sh
+*.txt
+*.json
+*.log
+!.gitignore
+!requirements.txt
+!deepthulac/
+!deepthulac/seg
+!deepthulac/seg/configs
+!text_brewer_example/
+__pycache__/
