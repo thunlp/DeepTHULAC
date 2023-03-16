@@ -10,7 +10,6 @@ import shutil
 from transformers.models.bert.modeling_bert import logger
 from torchcrf import CRF
 
-from transformers.optimization import get_cosine_schedule_with_warmup, AdamW
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
@@ -226,6 +225,8 @@ class Seg(nn.Module):
         return [input_ids, labels, sents]
 
     def fit(self, train_config, train_loader, dev_loader, model_dir, evaluator, teacher_model=None):
+        from transformers.optimization import get_cosine_schedule_with_warmup, AdamW # import error on Apple M1 
+
         epoch_num = 1
         learning_rate = train_config.learning_rate
         weight_decay = train_config.weight_decay

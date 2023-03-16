@@ -8,5 +8,7 @@
 !deepthulac/
 !deepthulac/seg
 !deepthulac/seg/configs
-!text_brewer_example/
+!deepthulac/legacy
+!deepthulac/legacy/**
 __pycache__/
+!data/seg/train.txt

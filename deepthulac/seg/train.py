@@ -76,7 +76,7 @@ def run_test(model_dir):
 def run_train():
     from sklearn.model_selection import train_test_split
     
-    config = load_yaml('./config.yaml')
+    config = load_yaml('./deepthulac/seg/configs/config_bmes.yaml')
     saved_path = init_saved_path('./output/seg')
     log_dir = saved_path + '/train.log'
     set_logger(log_dir)

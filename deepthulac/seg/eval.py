@@ -160,12 +160,50 @@ class SegEvaluator:
 
 
 if __name__ == "__main__":
-    def test_thulac():
-        import thulac
-        thulab_tok = thulac.thulac(seg_only=True)  # 只进行分词，不进行词性标注
-        lines = load_lines("data/msr_test.txt")
-        store_lines([line.replace(' ', '') for line in lines], 'data/temp_sent.txt')
-        thulab_tok.cut_f('data/temp_sent.txt', "data/temp_pred.txt")
-        f1, p, r = SegEvaluator.eval_files('data/temp_pred.txt', 'data/msr_test.txt')
-        print("f1 score: {}, precision: {}, recall: {}".format(f1, p, r))
-    test_thulac()
+    TEST_FILE = "data/seg_eval/pku_test_gold.txt"
+    TEST_FILE = "data/seg_eval/msr_test_gold.txt"
+    TEST_FILE = "data/seg_eval/nlpcc_wordseg_weibo"
+    TEST_FILE = "data/seg_eval/as_testing_gold"
+    TEST_FILE = "data/seg_eval/cityu_test_gold"
+    PRED_FILE = ".cache/temp_pred.txt"
+    msr_lines = load_lines(TEST_FILE)
+
+    def test_thulac(lines):
+        from deepthulac.legacy import thulac
+        lac = thulac.load()  # 只进行分词，不进行词性标注
+        sents = [line.replace(' ', '') for line in lines]
+        pred = lac.seg(sents)
+        lines = [' '.join(p) for p in pred]
+        store_lines(lines, PRED_FILE)
+        f1, p, r = SegEvaluator.eval_files(PRED_FILE, TEST_FILE)
+        print("DeepTHULAC:\nf1 score: {}, precision: {}, recall: {}".format(f1, p, r))
+
+    def test_ltp(lines):
+        import ltp
+        from tqdm import tqdm
+        ltp_tok = ltp.LTP("LTP/base1", cache_dir='.cache', local_files_only=True)
+        ltp_tok.cuda(1)
+        sents = [line.replace(' ', '') for line in lines]
+        pred = []
+        batch_size = 128  # NOTE: 要根据显存来定，太大了CUDA内存会不够
+        for i in tqdm(range(0, len(sents), batch_size)):
+            batch_sents = sents[i:min(i+batch_size, len(sents))]
+            pred.extend(ltp_tok.pipeline(batch_sents, tasks=["cws"]).cws)
+        lines = [' '.join(p) for p in pred]
+        store_lines(lines, PRED_FILE)
+        f1, p, r = SegEvaluator.eval_files(PRED_FILE, TEST_FILE)
+        print("LTP:\nf1 score: {}, precision: {}, recall: {}".format(f1, p, r))
+
+    def test_deepthulac(lines):
+        from deepthulac.seg.model import Seg
+        lac = Seg.load(device='cuda:1', use_f16=False)
+        sents = [line.replace(' ', '') for line in lines]
+        pred = lac.seg(sents)
+        lines = [' '.join(p) for p in pred]
+        store_lines(lines, PRED_FILE)
+        f1, p, r = SegEvaluator.eval_files(PRED_FILE, TEST_FILE)
+        print("DeepTHULAC:\nf1 score: {}, precision: {}, recall: {}".format(f1, p, r))
+
+    test_thulac(msr_lines)
+    #test_ltp(msr_lines)
+    #test_deepthulac(msr_lines)
