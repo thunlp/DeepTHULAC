@@ -1,120 +1,115 @@
+import argparse
 import functools
-import os
-import logging
-from torch.utils.data import DataLoader
-from torch.nn.parallel import DistributedDataParallel
-from torch.utils.data.distributed import DistributedSampler
-from munch import Munch
-from deepthulac.seg.model import Seg
-from deepthulac.utils import set_seed, set_logger, set_device, init_saved_path, load_yaml
+import math
+from deepthulac.seg.model import LacModel
+from deepthulac.utils import init_distributed, set_seed, set_logger, init_saved_path, load_yaml, DistributedInfo
 from deepthulac.seg.data_format import *
 from deepthulac.seg.eval import SegEvaluator
+from deepthulac.eval.test import run_test
+from deepthulac.utils import log, print_green
 import warnings
+import sys
 
+""" Training examples:
+CUDA_VISIBLE_DEVICES=2 python deepthulac/seg/train.py
+accelerate launch --gpu_ids 0 --num_processes 1 --mixed_precision fp16 deepthulac/seg/train.py
+accelerate launch --gpu_ids 6,7 --num_processes 2 --mixed_precision bf16 deepthulac/seg/train.py
+accelerate launch --gpu_ids 2,3,4,5 --num_processes 4 --mixed_precision bf16 deepthulac/seg/train.py
+accelerate launch --gpu_ids 0,1,2,3,4,5 --num_processes 6 --mixed_precision fp16 deepthulac/seg/train.py
+"""
 warnings.filterwarnings('ignore')
+dinfo = init_distributed()
 set_seed(42)
 
-if "LOCAL_RANK" in os.environ:
-    # CUDA_VISIBLE_DEVICES=0 python -m torch.distributed.launch --nproc_per_node=1 run.py
-    # CUDA_VISIBLE_DEVICES=4,5,6,7 torchrun --nproc_per_node=4 run.py
-    device_type = 'multigpu'
-else:
-    device_type = 'gpu'
-    os.environ["CUDA_VISIBLE_DEVICES"] = '0,1,2,3,4,5,6,7'
 
-device, local_rank = set_device(device_type)
+def run_train(config_file):
+    config = load_yaml(config_file)
+    if dinfo.is_main:
+        saved_path = init_saved_path(config.saved_path)
+        print_green(saved_path)
+        log_dir = saved_path + '/train.log'
+        set_logger(log_dir)
+        logging.info(' '.join(sys.argv[:]))
+    else:
+        saved_path = None
 
-device_config = Munch()
-device_config.device_type = device_type
-device_config.local_rank = local_rank
-device_config.device = device
+    data_strategy = getattr(config, 'data_strategy', 'shuffle_batches')
+    train_loaders = []
+    batch_order, loop_times, repeat_times = [], 0, []
+    for i, dataset in enumerate(config.train_datasets):
+        dataset_config = config.train_datasets[dataset]
+        dataset_config.name = dataset
+        dataset_config.split = 'train'
+        dataset_config.samples_num = 1600 if config.part_data else 0
+        train_loader = build_dataloader(dataset_config, config.heads, batch_size=config.batch_size)
+        train_loaders.append(train_loader)
+        if data_strategy=='continuous_batches':
+            continuous_batches = dataset_config.continuous_batches
+            batch_order.extend([i]*continuous_batches)
+            loop_times = max(loop_times, math.ceil(len(train_loader)/continuous_batches))
+        elif data_strategy=='shuffle_batches':
+            batch_order.extend([i]*len(train_loader)*dataset_config.repeat_times)
+        elif data_strategy=='shuffle_samples':
+            repeat_times.append(dataset_config.repeat_times)
+    if data_strategy == 'continuous_batches':
+        batch_order = batch_order * loop_times
+    elif data_strategy == 'shuffle_batches':
+        random.shuffle(batch_order)
+    elif data_strategy == 'shuffle_samples':
+        train_loaders = [build_mixed_dataloader(train_loaders, repeat_times)]
+        batch_order = [0]*len(train_loaders[0])
 
-data_dir = './data/seg'
+    dev_loaders = []
+    for dataset in config.dev_datasets:
+        dataset_config = config.dev_datasets[dataset]
+        dataset_config.name = dataset
+        dataset_config.split = 'test'
+        dataset_config.samples_num = 60 if config.part_data else 120  # 这个会影响训练过程中的eval和最终eval结果不一样的问题
+        dev_loader = build_dataloader(dataset_config, config.heads, batch_size=config.batch_size)
+        dev_loaders.append(dev_loader)
 
-
-def run_demo(model_dir):
-    sentences = ['在石油化工发达的国家已大幅取代了乙炔水合法。', '这件和服务必于今日裁剪完毕']
-    model = Seg.load(model_dir, device_config, use_f16=False)
-    results = model.seg(sentences)
-    print(results)
-
-
-def run_test(model_dir):
-    from sklearn.model_selection import train_test_split
-
-    log_dir = model_dir + '/test.log'
-    set_logger(log_dir)
-
-    batch_size = 32
-    model = Seg.load(model_dir, device_config, use_f16=False)
-    logging.info(f"--Load model from {model_dir}")
-    evaluator = functools.partial(SegEvaluator.eval_model, split_long=False)
-    mode = model.mode
-
-    dataset = format_trainset_by_special_token(f'{data_dir}/test.txt', mode, pair=True)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
-    logging.info('testing pku')
-    evaluator(dataloader, model, save_result=True, saved_path=model_dir, grain=0.5)
-
-    dataset = format_testset(f'{data_dir}/msr_test.txt', mode)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
-    logging.info('testing msr')
-    evaluator(dataloader, model, save_result=True, saved_path=model_dir, grain=0.5)
-
-    dataset = format_testset(f'{data_dir}/my_test.txt', mode)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
-    logging.info('testing custom')
-    evaluator(dataloader, model, save_result=True, saved_path=model_dir, grain=0.5)
-
-    dataset = format_trainset_by_special_token(f'{data_dir}/train_corpus.txt', mode, sample_num=473686, pair=True)
-    _, dataset = train_test_split(dataset, test_size=0.001, random_state=0)
-    dataloader = DataLoader(dataset, batch_size=batch_size, num_workers=4)
-    logging.info('testing corpus')
-    evaluator(dataloader, model, save_result=True, saved_path=model_dir, grain=0.5)
-
-
-def run_train():
-    from sklearn.model_selection import train_test_split
+    log('loading model')
     
-    config = load_yaml('./deepthulac/seg/configs/config_bmes.yaml')
-    saved_path = init_saved_path('./output/seg')
-    log_dir = saved_path + '/train.log'
-    set_logger(log_dir)
-
-    batch_size = config.batch_size
-    part_data = config.part_data
-    mode = 'BMES' if len(config.labels) == 4 else 'EN'
-
-    train_file = f'{data_dir}/train.txt'  # 'data/all_segment.txt'
-    if part_data:
-        samples = format_trainset_by_special_token(train_file, mode, 1600, pair=True)
-        samples = samples[:1600]
-        dev_split_size = 0.1
+    if hasattr(config, 'load_seg_pretrain'):
+        load_path = config.load_seg_pretrain # +'/'+config.saved_path.split('/')[-1]
+        if not os.path.exists(load_path):
+            seg_pretrain = LacModel.load(config.load_seg_pretrain)
+            model = LacModel(config, DistributedInfo(device='cpu'), config.pretrained_bert_model)
+            model.bert = seg_pretrain.bert
+            model.seg_head = seg_pretrain.seg_head
+            model.heads['seg'] = model.seg_head
+            model.save(load_path)
+        model = LacModel.load(load_path, dinfo.device)
+        model.model_config = config
     else:
-        samples = format_trainset_by_special_token(train_file, mode, 1581341_00, pair=True)  # 473686
-        dev_split_size = 0.001
-    samples_train, samples_dev = train_test_split(samples, test_size=dev_split_size, random_state=0)
-    store_samples(samples_dev, mode, 'test_samples.txt')
-    store_samples(samples_train, mode, 'train_samples.txt')
+        model = LacModel(config, dinfo, config.pretrained_bert_model)
+        
 
-    if device_type == 'multigpu':
-        train_loader = DataLoader(samples_train, batch_size=batch_size, sampler=DistributedSampler(samples_train, shuffle=False), num_workers=4)
-    else:
-        train_loader = DataLoader(samples_train, batch_size=batch_size, num_workers=4)
-    dev_loader = DataLoader(samples_dev, batch_size=batch_size, num_workers=4)
-
-    model = Seg(config, device_config)
-    model = model.to(device)
-    # model = BertSeg.load('path to model', device, use_f16=False))  # 继续训练
+    # model = LacModel.load(path, 'cuda:0', use_f16=False) # 加载训练好的模型
     evaluator = functools.partial(SegEvaluator.eval_model, split_long=False)
-    model.fit(config, train_loader, dev_loader, saved_path, evaluator)
-    if local_rank == 0:
-        run_test(saved_path)
-        run_demo(saved_path)
+    log('training')
+
+    model.fit(config, train_loaders, dev_loaders, saved_path, evaluator, batch_order)
+
+    def deepthulac_api(task, sents):
+        # TODO: split_long的影响非常巨大，要把split_long的逻辑改一下，让split之后尽量长
+        return model.seg(sents, batch_size=64, split_long=False, post_vmvd=False)[task]['res']  # seg_pos头也一样从pos里拿结果即可
+
+    if dinfo.is_main:
+        can_pos = 'pos' in model.heads or 'seg_pos' in model.heads
+        run_test(deepthulac_api, saved_path+'/test.log', can_pos)
     # 上传到huggingface
     # model.quantize_float16()
     # model.save_to_hub('chengzl18/deepthulac-seg', organization='chengzl18', commit_message='test', exist_ok=True)
 
 
 if __name__ == "__main__":
-    run_train()
+    CONFIG_PATH = './deepthulac/seg/configs'
+    DEFAULT_CONFIG_FILE = 'bound_seg/seg_punc_dict.yaml'
+    # DEFAULT_CONFIG_FILE = 'seg/seg_punc_dict.yaml'
+
+    parser = argparse.ArgumentParser()
+    # parser.add_argument('--config_path', default=CONFIG_PATH+'/'+DEFAULT_CONFIG_FILE, type=str)
+    parser.add_argument('--config_path', type=str)
+    args = parser.parse_args()
+    run_train(args.config_path)

@@ -7,8 +7,13 @@
 !requirements.txt
 !deepthulac/
 !deepthulac/seg
+!deepthulac/eval
 !deepthulac/seg/configs
+!deepthulac/seg/configs/*
 !deepthulac/legacy
 !deepthulac/legacy/**
+deepthulac/legacy/models
 __pycache__/
 !data/seg/train.txt
+!data_raw
+data_raw/data_clean.py

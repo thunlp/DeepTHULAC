@@ -1,0 +1,44 @@
+# 模型相关参数
+pretrained_bert_model: ./pretrained # 模型路径或huggingface的模型
+heads:
+  - bound
+seg_labels:
+  - B
+  - M
+  - E
+  - S
+head_config:
+  use_crf: False # 对于不完全标签的训练，不能用crf
+  layers_num: 1
+
+# 训练相关
+saved_path: output/bound_punc_dict
+learning_rate: 1.0e-05
+# warmup_steps: 0
+weight_decay: 0.01
+clip_grad: 5
+
+batch_size: 192 #32
+
+train_datasets:
+  # dataset_name:
+  #   dir: 数据集所在文件夹，可选，默认为./data，文件路径为{dir}/{dataset_name}_train_{num}.txt
+  #   corpus_name: 用来映射到corpus_tag，做多标准学习，可选，默认映射到CLS
+  #   extra_info: 字典数据是否使用边界信息，可选，默认为False。实验结果表明用extra_info更好
+  #   continuous_batches: 此数据集连续训练多少个batch，如果有一个有，所有数据集都必须设置；如果都没有，则所有数据的batch shuffle训练。112比123更好
+  punc_baidubaike0rs:
+    dir: data # 放在哪个文件夹下
+    continuous_batches: 1
+  dict_wantwords:
+    dir: data
+    continuous_batches: 1
+    extra_info: True
+  seg_ours:
+    dir: data
+    continuous_batches: 2
+
+dev_datasets:
+  seg_ours:
+    dir: data
+
+part_data: False

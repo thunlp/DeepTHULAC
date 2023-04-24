@@ -1,0 +1,61 @@
+# 模型相关参数
+# CUDA_VISIBLE_DEVICES=5 python deepthulac/seg/train.py
+# accelerate launch --gpu_ids 0,1,2,3 --num_processes 4 --mixed_precision bf16 deepthulac/seg/train.py
+pretrained_bert_model: bert-base-chinese #./pretrained # 模型路径或huggingface的模型
+heads:
+  - bound
+seg_labels:
+  - B
+  - M
+  - E
+  - S
+head_config:
+  use_crf: False
+  layers_num: 1
+
+# 训练相关
+saved_path: output/bound_seg_punc_dict
+learning_rate: 1.0e-05
+warmup_steps: 100
+# warmup_steps: 30000
+# eval_steps: 7200
+weight_decay: 0.01
+clip_grad: 5
+batch_size: 32 # 128
+
+# shuffle_samples 会将所有数据集的样本按repeat_times重复，混合后合并为一个数据集进行训练
+# shuffle_batches 会将所有数据集的batch按repeat_times重复，混合后训练，每个训练集都会被完整地训练repeat_times次
+# continuous_batches 会对各个数据集的batch连续训练continuous_batches个batch后轮换训练，最先训完的数据集只训练一遍，其余训练集可能训练多遍
+data_strategy: continuous_batches # continuous_batches
+train_datasets:
+  # dataset_name:
+  #   dir: 数据集所在文件夹，可选，默认为./data，文件路径为{dir}/{dataset_name}_train_{num}.txt
+  #   extra_info: 字典数据是否使用边界信息，可选，默认为False。实验结果表明用extra_info更好
+  #   continuous_batches: （data_strategy=continuous_batches时有效且必填）此数据集会连续训练多少个batch才轮换到其他dataset
+  #   repeat_times: （data_strategy=shuffle_*时有效且必填）此数据集在一个epoch中会被重复使用多少遍
+  # TODO: 写一个samples_num
+  punc_baidubaike-rs:
+    dir: data
+    repeat_times: 1
+    continuous_batches: 1
+    file_order_reverse: False
+  punc_baidubaike-rm:
+    dir: data
+    repeat_times: 1
+    continuous_batches: 1
+    file_order_reverse: True
+  dict_wantwords-shuffle:
+    dir: data
+    repeat_times: 4
+    continuous_batches: 1
+    extra_info: True
+  seg_ours:
+    dir: data
+    repeat_times: 4
+    continuous_batches: 1 # 431/259487
+
+dev_datasets:
+  seg_ours:
+    dir: data
+
+part_data: False

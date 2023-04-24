@@ -1,0 +1,79 @@
+# 只采用BMES标注
+# 采用多头
+
+# custom_pretrained
+# nghuyong/ernie-3.0-base-zh
+# hfl/chinese-bert-wwm-ext  hfl/rbt4-h312 46M
+# hfl/chinese-lert-base     hfl/chinese-lert-small 60M
+# hfl/chinese-electra-180g-base-discriminator hfl/chinese-electra-180g-small-discriminator 50M
+pretrained_bert_model: custom_pretrained
+# hyper-parameter
+learning_rate: 1.0e-05
+weight_decay: 0.01
+clip_grad: 5
+
+batch_size: 24
+
+heads:
+  - seg_pos
+  - punc
+seg_labels:
+  - B
+  - M
+  - E
+  - S
+punc_labels:
+  - B
+  - M
+  - E
+  - S
+pos_labels:
+  - w
+  - e
+  - g
+  - o
+  - mq
+  - f
+  - h
+  - a
+  - j
+  - id
+  - k
+  - v
+  - c
+  - u
+  - nz
+  - r
+  - q
+  - s
+  - x
+  - m
+  - np
+  - p
+  - d
+  - ns
+  - t
+  - n
+  - ni
+#  - vm
+#  - vd
+train_datasets:
+  # - seg_pku
+  # - seg_ours
+  - punc_baidubaike0rm
+  - pos_ours
+  # - punc_baidubaike0rs
+  # - dict_wantwords
+dev_datasets:
+  # - seg_pku
+  # - seg_ours
+  - punc_baidubaike0rm
+  - pos_ours
+  # - punc_baidubaike0rs
+  # - seg_dict
+saved_path: output/semi
+head_config:
+  use_crf: True
+  layers_num: 1
+
+part_data: False

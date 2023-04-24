@@ -1,0 +1,64 @@
+# 模型相关参数
+pretrained_bert_model: custom_pretrained
+heads:
+  - seg
+  - pos
+seg_labels:
+  - B
+  - M
+  - E
+  - S
+pos_labels:
+  - w
+  - e
+  - g
+  - o
+  - mq
+  - f
+  - h
+  - a
+  - j
+  - id
+  - k
+  - v
+  - c
+  - u
+  - nz
+  - r
+  - q
+  - s
+  - x
+  - m
+  - np
+  - p
+  - d
+  - ns
+  - t
+  - n
+  - ni
+  # - vm
+  # - vd
+head_config:
+  use_crf: True
+  layers_num: 1
+
+# 训练相关参数
+saved_path: output/pos
+learning_rate: 1.0e-05
+weight_decay: 0.01
+clip_grad: 5
+
+batch_size: 32
+
+# 训练数据
+train_datasets:
+  seg_ours:
+    dir: data
+  pos_ours:
+    dir: data
+dev_datasets:
+  seg_ours:
+    dir: data
+  pos_ours:
+    dir: data
+part_data: True

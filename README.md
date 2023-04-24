@@ -34,11 +34,11 @@ DeepTHULAC基于实验室自研BERT，并利用我们整合的目前世界上规
 ### 分词
 
 ```python
-from deepthulac.seg.model import Seg
+from deepthulac.seg.model import LacModel
 from deepthulac.utils import load_lines, store_lines
 
 # 加载模型
-lac = Seg.load(device='cuda:0') # cuda或cpu
+lac = LacModel.load(device='cuda:0') # cuda或cpu
 
 # 句子分词
 results = lac.seg([

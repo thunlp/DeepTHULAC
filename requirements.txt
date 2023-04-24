@@ -4,3 +4,5 @@ pytorch-crf
 munch
 cyac
 colorama
+accelerate
+typeguard

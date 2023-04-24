@@ -1,0 +1,90 @@
+# 模型相关参数
+pretrained_bert_model: ./pretrained # 模型路径或huggingface的模型
+heads:
+  - bound
+seg_labels:
+  - B
+  - M
+  - E
+  - S
+head_config:
+  use_crf: False
+  layers_num: 1
+
+# 训练相关
+saved_path: output/bound_seg_punc_dict_corpustag
+learning_rate: 1.0e-05
+warmup_steps: 30000
+eval_steps: 7200
+weight_decay: 0.01
+clip_grad: 5
+batch_size: 16
+
+train_datasets:
+  # dataset_name:
+  #   dir: 数据集所在文件夹，可选，默认为./data，文件路径为{dir}/{dataset_name}_train_{num}.txt
+  #   extra_info: 字典数据是否使用边界信息，可选，默认为False。实验结果表明用extra_info更好
+  #   continuous_batches: 此数据集连续训练多少个batch，如果有一个有，所有数据集都必须设置；如果都没有，则所有数据的batch shuffle训练。112比123更好
+  punc_baidubaike-rs:
+    dir: data # 放在哪个文件夹下
+    continuous_batches: 300
+  dict_wantwords:
+    dir: data
+    continuous_batches: 300
+    extra_info: True
+  seg_as:
+    dir: data/seperate_data
+    continuous_batches: 50
+  seg_cityu:
+    dir: data/seperate_data
+    continuous_batches: 10
+  seg_ctb:
+    dir: data/seperate_data
+    continuous_batches: 15
+  seg_hanyuyuliaoku:
+    dir: data/seperate_data
+    continuous_batches: 10
+  seg_keben:
+    dir: data/seperate_data
+    continuous_batches: 5
+  seg_msr:
+    dir: data/seperate_data
+    continuous_batches: 20
+  seg_nlpcc2016:
+    dir: data/seperate_data
+    continuous_batches: 5
+  seg_pku:
+    dir: data/seperate_data
+    continuous_batches: 5
+  seg_rmrb2014:
+    dir: data/seperate_data
+    continuous_batches: 30
+  seg_sanku:
+    dir: data/seperate_data
+    continuous_batches: 150
+
+dev_datasets:
+  seg_as:
+    dir: data/seperate_data
+  seg_cityu:
+    dir: data/seperate_data
+  seg_ctb:
+    dir: data/seperate_data
+  seg_hanyuyuliaoku:
+    dir: data/seperate_data
+  seg_keben:
+    dir: data/seperate_data
+  seg_msr:
+    dir: data/seperate_data
+  seg_nlpcc2016:
+    dir: data/seperate_data
+  seg_pku:
+    dir: data/seperate_data
+  seg_rmrb2014:
+    dir: data/seperate_data
+  seg_sanku:
+    dir: data/seperate_data
+  seg_ours:
+    dir: data
+
+part_data: False

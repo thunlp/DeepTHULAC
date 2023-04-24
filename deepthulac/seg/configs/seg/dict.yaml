@@ -1,0 +1,31 @@
+# 模型相关参数
+pretrained_bert_model: custom_pretrained
+heads:
+  - seg
+seg_labels:
+  - B
+  - M
+  - E
+  - S
+head_config:
+  use_crf: False # 对于不完全标签的训练，不能用crf
+  layers_num: 1
+
+# 训练相关
+saved_path: output/dict
+learning_rate: 1.0e-05
+# warmup_steps: 0
+weight_decay: 0.01
+clip_grad: 5
+
+batch_size: 32
+
+train_datasets:
+  dict_wantwords:
+    dir: data
+    continuous_batches: 300
+    extra_info: False
+dev_datasets:
+  seg_ours:
+    dir: data
+part_data: True

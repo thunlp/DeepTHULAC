@@ -1,0 +1,69 @@
+# 模型相关参数
+pretrained_bert_model: custom_pretrained
+heads:
+  - seg
+  - pos
+  - punc
+seg_labels:
+  - B
+  - M
+  - E
+  - S
+pos_labels:
+  - w
+  - e
+  - g
+  - o
+  - mq
+  - f
+  - h
+  - a
+  - j
+  - id
+  - k
+  - v
+  - c
+  - u
+  - nz
+  - r
+  - q
+  - s
+  - x
+  - m
+  - np
+  - p
+  - d
+  - ns
+  - t
+  - n
+  - ni
+  # - vm
+  # - vd
+punc_labels:
+  - B
+  - M
+  - E
+  - S
+head_config:
+  use_crf: False # TODO: crf按每个头来定义
+  layers_num: 1
+
+# 训练相关参数
+saved_path: output/seg_pos_punc_dict
+learning_rate: 1.0e-05
+weight_decay: 0.01
+clip_grad: 5
+
+batch_size: 32
+
+# 训练数据
+train_datasets:
+  - seg_ours
+  - pos_ours
+  - punc_baidubaike0rs # punc_baidubaike0rm
+  - dict_wantwords
+dev_datasets:
+  - seg_ours
+  - pos_ours
+  # - dict_wantwords
+part_data: True

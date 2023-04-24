@@ -6,12 +6,57 @@ import os
 import json
 import yaml
 from munch import Munch
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import wraps
 import time
+import shutil
 import colorama
 from colorama import Fore, Style
+
+from accelerate.utils import DistributedDataParallelKwargs
+from accelerate import Accelerator
+from typing import Optional, Union
+from dataclasses import dataclass
 colorama.init()
+
+
+@dataclass
+class DistributedInfo:
+    accelerator: Optional[Accelerator] = None
+    world_size: int = 1
+    local_rank: int = 0
+    is_main: bool = True
+    device: Union[str, torch.device] = 'cuda'
+
+
+def init_distributed():
+    global dinfo
+    if "LOCAL_RANK" in os.environ:
+        # split the batches of the original data loader across devices, batch_size= gpu_num * per_gpu_batch_size
+        accelerator = Accelerator(split_batches=True, kwargs_handlers=[DistributedDataParallelKwargs(find_unused_parameters=True)])
+        dinfo = DistributedInfo(accelerator, accelerator.num_processes, accelerator.process_index, accelerator.is_local_main_process, accelerator.device)
+        dinfo.world_size = accelerator.num_processes
+        dinfo.local_rank = accelerator.process_index
+
+    else:
+        dinfo = DistributedInfo()
+    return dinfo
+
+
+def get_dinfo():
+    try:
+        return dinfo
+    except Exception:
+        return init_distributed()
+
+
+def log(*args, **kwargs):
+    if get_dinfo().is_main:
+        print(*args, **kwargs)
+
+
+def print_green(s):
+    print(Fore.GREEN+s+Style.RESET_ALL)
 
 
 def timer(func):
@@ -29,9 +74,10 @@ def timer(func):
 
 
 def init_saved_path(path):
-    name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    name = (datetime.utcnow() + timedelta(hours=8)).strftime("%Y-%m-%d_%H-%M-%S")
     model_save_path = path + '/' + name
     os.makedirs(model_save_path, exist_ok=True)
+    shutil.make_archive(model_save_path+'/archive/deepthulac', 'zip', 'deepthulac')
     return model_save_path
 
 
@@ -85,14 +131,20 @@ def load_lines(file, remove_empty=True):
     return lines
 
 
-def store_lines(lines, file):
+def store_lines(lines, file, samples=0):
     with open(file, 'w', encoding='utf-8') as f:
         f.write('\n'.join(lines))
+    if samples:
+        with open(file+'.sample', 'w', encoding='utf-8') as f:
+            f.write('\n'.join(random.sample(lines, samples)))
 
 
-def store_json(obj, file):
+def store_json(obj, file, samples=0):
     with open(file, 'w', encoding='utf-8') as f:
         json.dump(obj, f, indent=4, ensure_ascii=False)
+    if samples:
+        with open(file+'.sample', 'w', encoding='utf-8') as f:
+            json.dump(random.sample(obj.items(), samples), f, indent=4, ensure_ascii=False)
 
 
 def load_json(file):
@@ -118,7 +170,7 @@ try:
     gpu_num = os.environ['CUDA_VISIBLE_DEVICES'].count(',')+1
 except Exception:
     gpu_num = 8
-use_gpu = True
+use_gpu = False  # True
 
 pbars = []  # 并行处理的进度条
 

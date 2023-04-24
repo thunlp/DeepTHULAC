@@ -248,11 +248,11 @@ class thulac:
         return self.__cutline(oiraw)
 
     @classmethod
-    def load(cls, path=None, cache_dir=None):
+    def load(cls, path=None, cache_dir=None, seg_only=True):
         from huggingface_hub import snapshot_download
         if not path:
             path = snapshot_download(repo_id="chengzl18/thulac-seg", cache_dir=cache_dir)
-        model = cls(model_path=path, seg_only=True)
+        model = cls(model_path=path, seg_only=seg_only)
         return model
 
     def seg(self, sentences, show_progress_bar=True):

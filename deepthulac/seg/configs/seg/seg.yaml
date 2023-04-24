@@ -1,0 +1,38 @@
+# 模型相关参数
+# CUDA_VISIBLE_DEVICES=6 python deepthulac/seg/train.py --config_path=deepthulac/seg/configs/seg/seg.yaml
+pretrained_bert_model: bert-base-chinese
+heads:
+  - seg
+seg_labels:
+  - B
+  - M
+  - E
+  - S
+head_config:
+  use_crf: False
+  layers_num: 1
+  dropout: 0.1
+
+# 训练相关参数
+saved_path: output/seg
+epoch_num: 2
+learning_rate: 1.0e-05
+warmup_steps: 1.0 # 如果是int代表步数，如果是float，代表多少倍的steps_per_epoch
+weight_decay: 0.01
+clip_grad: 5
+
+batch_size: 32
+
+data_strategy: shuffle_batches # shuffle_batches
+# 训练数据
+train_datasets:
+  seg_ours:
+    dir: data
+    repeat_times: 1
+  seg_ours-rm:  # for data augmentation
+    dir: data
+    repeat_times: 1
+dev_datasets:
+  seg_ours:
+    dir: data
+part_data: False
