@@ -25,7 +25,7 @@ DeepTHULAC基于实验室自研BERT，并利用我们整合的目前世界上规
 
 1.  安装 [pytorch](https://pytorch.org/get-started/locally/)
 
-2. ```
+2. ```bash
    pip install deepthulac
    ```
 
@@ -49,6 +49,7 @@ store_lines([' '.join(w) for w in results], 'results.txt')
 ```
 
 ### 加入用户词表
+安装依赖包 `pip install cyac`。
 
 ```python
 text = '醋酸氟轻松是一种皮质类固醇，主要用于治疗皮肤病，减少皮肤炎症和缓解瘙痒。'
