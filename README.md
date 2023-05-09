@@ -35,7 +35,7 @@ DeepTHULAC基于实验室自研BERT，并利用我们整合的目前世界上规
 
 ```python
 from deepthulac import LacModel
-lac = LacModel.load(path='', device='cuda:0') # 加载模型，device设置为cuda或cpu
+lac = LacModel.load(path='', device='cuda:0') # 加载模型，path为模型文件夹路径，空表示自动从huggingface下载，device设置为cuda或cpu
 
 # 句子分词
 sents = ['在石油化工发达的国家已大幅取代了乙炔水合法。', '他在衬衫外套了件外套，出门去了。']
@@ -47,6 +47,8 @@ from deepthulac.utils import load_lines, store_lines
 results = lac.seg(load_lines('lines.txt'), batch_size=256)['seg']['res']
 store_lines([' '.join(w) for w in results], 'results.txt')
 ```
+
+如果由于网络问题无法自动下载模型，可以[从这里手动下载](https://cloud.tsinghua.edu.cn/d/58ad34f5cc1c40a19071/)，path设置为模型路径（如果是Windows系统，路径形如`'X:\\...\\deepthulac-seg-model'`）。
 
 ### 加入用户词表
 安装依赖包 `pip install cyac`。
