@@ -5,7 +5,7 @@ from typing import List, Callable, Optional
 from typeguard import typechecked
 from tqdm import tqdm
 from deepthulac.seg.cut_sent import split_sentence
-from deepthulac.utils import load_lines, parallel_run, store_lines, load_json, store_json, timer, log
+from deepthulac.utils import get_dinfo, load_lines, parallel_run, store_lines, load_json, store_json, timer, log
 from deepthulac.seg.seg_utils import *
 import os
 from distutils.version import StrictVersion
@@ -16,7 +16,7 @@ else:
     from typing_extensions import Literal
 import random
 import logging
-
+from deepthulac.utils import timer
 
 class LacDataset(IterableDataset):
     @typechecked
@@ -43,17 +43,34 @@ class LacDataset(IterableDataset):
         self.corpus_name = corpus_name
 
     def __iter__(self):
+        import time
         index = -1
+        
         for file in self.files:
             logging.info(f'{file} start')
             with open(file, 'r', encoding='utf-8') as f:
+                start_time = time.perf_counter()
                 for line in f:
                     index += 1
                     if index == self.lines_num:
                         return
+
+                    # print(index, end=' ')
+                    """
+                    if index%(32*8)==0:
+                        end_time = time.perf_counter()
+                        total_time = end_time - start_time
+                        start_time=end_time
+                        #print()
+                        print(get_dinfo().local_rank, total_time)"""
                     # print(self.line_processor(line.strip('\n')))
-                    train_sample = self.line_processor(line.strip('\n'))
+                    train_sample = self.line_processor(line.strip('\n')) # 这个处理很快, 主要是collate非常慢
+                    # print(train_sample)
                     if train_sample:
+                        # chars = np.array([ord(x) for x in train_sample[0]])
+                        # labels = np.array([ord(x) for x in train_sample[1]])
+                        # yield chars
+                        # yield (chars, )+(self.corpus_name, )
                         yield train_sample+(self.corpus_name, )
             logging.info(f'{file} end')
 
@@ -79,7 +96,7 @@ class MixedLacDataset(IterableDataset):
             try:
                 yield next(data_iters[i])
             except StopIteration:
-                data_iters[i] = iter(self.datasets[i])
+                data_iters[i] = iter(self.datasets[1])
                 yield next(data_iters[i])
 
     def __len__(self):
@@ -443,13 +460,22 @@ if __name__ == "__main__":
     @timer
     def test_lacdataset():
         path = 'data/seg_ours_train_1611208.txt'
-        dataset = LacDataset(path, seg_line_processor, lines_num=0)
+        dataset = LacDataset('seg', path, seg_line_processor, lines_num=0)
         dataloader = DataLoader(dataset, batch_size=1, num_workers=1)
-        print(next(iter(dataloader.dataset)))
+        # print(next(iter(dataloader.dataset)))
         for batch in dataloader:
             pass
             # print(batch)
         print(len(dataloader))
+
+    
+    format_raw('data_raw/pos_guiyuan_train.txt')
+    exit(0)
+    format_raw('data_raw/seg_zuozhuan-a_test.txt')
+    format_raw('data_raw/seg_zuozhuan-b_test.txt')
+    exit(0)
+    test_lacdataset()
+    exit(0)
 
     # seg_remove_punc('data_raw/seg_zuozhuan_train.txt', 'zuozhuan')
     format_raw('data_raw/seg_zuozhuan-rm_train.txt')

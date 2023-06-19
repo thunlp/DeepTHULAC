@@ -27,7 +27,7 @@ warmup_steps: 100
 # eval_steps: 7200
 weight_decay: 0.01
 clip_grad: 5
-batch_size: 16 # 128 64*4
+batch_size: 32 # 128 64*4
 
 # shuffle_samples 会将所有数据集的样本按repeat_times重复，混合后合并为一个数据集进行训练
 # shuffle_batches 会将所有数据集的batch按repeat_times重复，混合后训练，每个训练集都会被完整地训练repeat_times次

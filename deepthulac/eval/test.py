@@ -226,6 +226,7 @@ def run_test(api, log_file: str, can_pos):
         # seg
         'seg_ours_test_2000.txt',
         'seg_oursseg_test_1614.txt',
+        'seg_zuozhuan-a_test_1594.txt',
         # 'seg_pku_test_1951.txt',
         'seg_msr_test_3985.txt',
         'seg_cityu_test_1492.txt',
@@ -265,7 +266,7 @@ def run_test(api, log_file: str, can_pos):
 
         scores[fileformat+'-gi' if gi else fileformat].append(f'{score[0]*100:.2f}')
 
-    table = PrettyTable(['pos', 'seghard', 'ours/oursseg/msr/cityu/as/cbt/nlpcc',  'dict', 'seg-gi'])
+    table = PrettyTable(['pos', 'seghard', 'ours/oursseg/zuozhuan/msr/cityu/as/cbt/nlpcc',  'dict', 'seg-gi'])
     table.add_row(['/'.join(scores['pos']), '/'.join(scores['seghard']), '/'.join(scores['seg']), '/'.join(scores['dict']), '/'.join(scores['seg-gi'])])
     logging.info(log_file+"\n"+str(table))
 
@@ -294,6 +295,9 @@ if __name__ == "__main__":
     path = 'output/bound_seg_punc_dict/2023-03-05_03-03-24/8601600'
     path = 'output/seg_punc_dict_pretrain/2023-03-06_04-32-47/2867200'
     path = '/data03/private/chengzhili/segmentation/output/_good_checkpoint/sup_pretrain'
+    path = 'output/seg/2023-03-21_12-29-16 char-cm lr1e-4 best'
+    path = 'output/seg/2023-03-21_12-47-40 bert-base lr2e-5 best'
+    path = 'output/seg/2023-03-21_12-53-56 char-cm lr5e-5 best'
     # path = 'output/seg_punc_dict_pretrain/2023-03-06_04-31-08/3276800'
 
     #from ltp import LTP
@@ -317,7 +321,7 @@ if __name__ == "__main__":
     saved_path = args.model_path
 
     print('loading...')
-    device = 'cuda:3'  # 'cuda:5'
+    device = 'cuda:2'  # 'cuda:5'
     log_file = saved_path+'/test.log'
 
     def deepthulac_api(task, sents):

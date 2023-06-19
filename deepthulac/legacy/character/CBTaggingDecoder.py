@@ -181,7 +181,7 @@ class CBTaggingDecoder:
             if((i == self.len-1) or (self.labelInfo[self.result[i]][0] == '2') or (self.labelInfo[self.result[i]][0] == '3')):
                 ts.append((self.sequence[offset:i+1], self.separator, self.labelInfo[self.result[i]][1:-1]))
                 offset = i + 1
-        print(ts)
+        # print(ts)
         return 1, ts
 
     def get_seg_result(self):

@@ -10,20 +10,25 @@ import shutil
 from transformers.models.bert.modeling_bert import logger
 from torchcrf import CRF
 
+from torch.nn.parallel import DistributedDataParallel
+from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 import logging
 from munch import Munch
-from transformers import AutoTokenizer, AutoModel, BertTokenizer, BertConfig
+from transformers import AutoTokenizer, AutoModel, BertTokenizer, ErnieModel
 from torch.utils.data import DataLoader
+from deepthulac.seg.post_process import UserDict, adjust_pos
 from deepthulac.seg.seg_utils import *
-from deepthulac.seg.cut_sent import restore_batch, split_batch_with_group_texts
+from deepthulac.seg.cut_sent import restore_batch, split_batch
 from deepthulac.seg.data_format import make_pair
-from deepthulac.utils import DistributedInfo, load_yaml, store_yaml
-from deepthulac.eval.cases import *
+from deepthulac.utils import load_yaml, set_device, store_yaml
 import torch.nn.functional as F
-
+# from sentence_transformers import SentenceTransformer  # TODO: 学习它分dataloader分batch的策略
 import functools
 import random
+
+#x =torch.tensor([[1,2,3], [1,3,4]])
+# y = (x>=2) # NOTE: x>=2会压缩成一维
 
 
 def kd_ce_loss(logits_S, logits_T, temperature):
@@ -56,7 +61,6 @@ class Head(nn.Module):
     def __init__(self, bert_config, labels: List[str], head_config) -> None:
         super().__init__()
         num_labels = len(labels)
-        self.num_labels = num_labels
         # self.dropout = nn.Dropout(bert_config.hidden_dropout_prob)  # dropout是不是可以调一下？
         # self.classifier = nn.Linear(bert_config.hidden_size, num_labels)
         # NOTE: 多任务不能用单层线性了，要用MLP，否则会极大限制能力？？
@@ -66,7 +70,7 @@ class Head(nn.Module):
         else:
             self.classifier = MLP([bert_config.hidden_size, 512, 256, num_labels])
 
-        self.dropout = nn.Dropout(p=getattr(head_config, 'dropout', 0.1))
+        # self.dropout = nn.Dropout(p=0.1)
 
         self.use_crf = head_config.use_crf
         if self.use_crf:
@@ -76,7 +80,7 @@ class Head(nn.Module):
         self.id2label = {i: label for i, label in enumerate(labels)}
 
     def forward(self, x):
-        x = self.dropout(x)
+        # x = self.dropout(x)  # TODO: dropout调参
         outputs = self.classifier(x)
         return outputs
 
@@ -104,120 +108,17 @@ class Head(nn.Module):
         labels = [[self.id2label.get(idx) for idx in indices] for indices in labels]
         return labels
 
-    def partial_label_loss(self, logits, labels):
-        # 参考 https://github.com/mikigom/DNPL-PyTorch/blob/master/train.py#L124
-        full, partial = labels < self.num_labels, labels >= self.num_labels
-        full_loss = nn.CrossEntropyLoss(reduction='sum')(logits[full], labels[full])
-        sum_p = (F.softmax(logits[partial], dim=1) * ids2partial_label(labels[partial], self.num_labels)).sum(-1)  # 所有可能标签的概率
-        partial_loss = -torch.sum(torch.log(sum_p.clamp(0., 1.) + 1e-10))
-        return (full_loss + partial_loss) / len(logits)
-
-    def loss_func_with_crf(self, logits, labels):
-        loss_mask = labels.gt(-1)  # NOTE padded_label=-1
-        loss = self.crf(logits, labels, loss_mask) * (-1)
-        return loss
-
-    def loss_func_no_crf(self, logits, labels, teacher_model=None, teacher_input_ids=None, task=None):
-        loss_mask = labels.gt(-1)
-        loss_mask = loss_mask.view(-1) == 1
-        # 只对label实际存在的位置计算loss
-        active_logits = logits.view(-1, self.num_labels)[loss_mask]
-        active_labels = labels.view(-1)[loss_mask]
-
-        if not torch.any(labels >= self.num_labels):  # 所有的标签都没有partial label，NOTE: 可以去掉？
-            loss_fct = nn.CrossEntropyLoss()  # NOTE: = softmax + entropy
-        else:
-            loss_fct = self.partial_label_loss
-
-        loss = loss_fct(active_logits, active_labels)
-
-        if teacher_model:
-            teacher_model.eval()
-            alpha = 0.95
-            loss_fct = kd_ce_loss
-            with torch.no_grad():
-                # 词表不一样，不能用同一份input_data
-                logits_teacher = teacher_model.heads[task](teacher_model.forward_backbone(teacher_input_ids))
-            active_logits_teacher = logits_teacher.view(-1, self.num_labels)[loss_mask]
-            loss_soft = loss_fct(active_logits, active_logits_teacher, temperature=1)
-            # https://github.com/haitongli/knowledge-distillation-pytorch/blob/master/model/net.py
-            # loss_soft = nn.KLDivLoss()(F.log_softmax(outputs/T, dim=1), F.softmax(active_logits_teacher/T, dim=1)) * ( T * T)
-            loss = loss_soft*alpha + loss*(1. - alpha)
-        return loss
-
-    def loss_func(self, logits, labels, teacher_model=None, teacher_input_ids=None, task=None):
-        if self.use_crf:
-            return self.loss_func_with_crf(logits, labels)
-        else:
-            return self.loss_func_no_crf(logits, labels, teacher_model, teacher_input_ids, task)
-
-
-class BoundDetectHead(nn.Module):
-    def __init__(self, bert_config, head_config) -> None:
-        super().__init__()
-        if head_config.layers_num == 1:
-            self.classifier_left_bound = MLP([bert_config.hidden_size, 2])
-            self.classifier_right_bound = MLP([bert_config.hidden_size, 2])
-        else:
-            self.classifier_left_bound = MLP([bert_config.hidden_size, 512, 256, 2])
-            self.classifier_right_bound = MLP([bert_config.hidden_size, 512, 256, 2])
-        # TODO: 加dropout？
-        self.use_crf = False
-
-        # 三个bit表示:  ([不确定性]) [左边是否是边界] [右边是否是边界]
-        self.label2id = {'B': 0b10, 'E': 0b01, 'M': 0b00, 'S': 0b11, 'B/S': 0b110, 'E/S': 0b101}
-        self.id2label = {self.label2id[label]: label for label in self.label2id}
-
-    def forward(self, x):
-        outputs = torch.cat([self.classifier_left_bound(x), self.classifier_right_bound(x)], dim=-1)
-        return outputs
-
-    def decode(self, outputs, mask):  # outputs：每个字符所有类别得分(batch_size, max_len),  mask：对应是否不是pad
-        # 仅用于测试，decode from head emissions
-        left_outputs, right_outputs = torch.split(outputs, [2, 2], dim=-1)
-        left_labels, right_labels = torch.argmax(left_outputs, dim=-1), torch.argmax(right_outputs, dim=-1)  # (batch_size, seq_len) 1表示分,0表示不分
-        outputs = (left_labels << 1)+right_labels  # labels
-        labels = []
-        for output, label_mask in zip(outputs, mask):
-            labels.append([output[i].item() for i in range(sum(label_mask))])
-        labels = [[self.id2label.get(idx) for idx in indices] for indices in labels]
-
-        return labels
-
-    def compute_loss(self, logits, labels):
-        loss_mask = labels.gt(-1)
-        loss_mask = loss_mask.view(-1) == 1
-        # 只对label实际存在的位置计算loss
-        active_logits = logits.view(-1, 2)[loss_mask]
-        active_labels = labels.view(-1)[loss_mask]
-        loss = nn.CrossEntropyLoss()(active_logits, active_labels)  # TODO: 试一下 BCEWithLogitsLoss
-        return loss
-
-    def loss_func(self, logits, labels, teacher_model=None, teacher_input_ids=None, task=None):
-        left_labels = (labels & 0b10) >> 1  # 取出左边界的二分类值 # (batch_size, seq_len)
-        left_labels[labels.lt(0)] = -1  # 不确定的U标签
-        left_labels[labels == 0b101] = -1  # 左边界不确定
-
-        right_labels = (labels & 0b01)
-        right_labels[labels.lt(0)] = -1
-        right_labels[labels == 0b110] = -1
-
-        left_logits, right_logits = torch.split(logits, [2, 2], dim=-1)  # (batch_size, seq_len, 4)
-        # logits = torch.cat([left_logits, right_logits],dim=1) # (batch_size, seq_len+seq_len, 2)
-        # labels = torch.cat([left_labels, right_labels],dim=1)
-        # return self.compute_loss(logits, labels)
-        return (self.compute_loss(left_logits, left_labels) + self.compute_loss(right_logits, right_labels))/2
-
 
 class LacModel(nn.Module):
-    def __init__(self, config, dinfo, pretrained_path):
-        # pretrained_path is pretrained model path or huggingface model or checkpoint
-        bert = AutoModel.from_pretrained(pretrained_path)
-        custom = os.path.exists(pretrained_path)
+    def __init__(self, config, device_config, checkpoint_dir=None, pretrained_model_dir='./pretrained'):
+        custom = (config.pretrained_bert_model == 'custom_pretrained')
+        if checkpoint_dir:
+            bert = AutoModel.from_pretrained(checkpoint_dir)
+        else:
+            bert = AutoModel.from_pretrained(pretrained_model_dir if custom else config.pretrained_bert_model)
         if custom:
-            self.pretrained_path = pretrained_path
-            # tokenizer = BertTokenizer.from_pretrained(f'{self.pretrained_path}/vocab.txt')
-            tokenizer = AutoTokenizer.from_pretrained(f'{self.pretrained_path}', trust_remote_code=True) # 这个我自己写了tokenizer
+            self.pretrained_model_dir = checkpoint_dir if checkpoint_dir else pretrained_model_dir
+            tokenizer = BertTokenizer.from_pretrained(f'{self.pretrained_model_dir}/vocab.txt')
         else:
             tokenizer = AutoTokenizer.from_pretrained(config.pretrained_bert_model)
         super(LacModel, self).__init__()
@@ -228,13 +129,13 @@ class LacModel(nn.Module):
             config.heads = ['seg', 'pos']
 
         self.heads = {}
-
+        
         # 历史版本兼容
         if 'head_config' not in config:
             config.head_config = Munch()
             config.head_config.use_crf = config.use_crf
             config.head_config.layers_num = 3
-
+        
         if 'seg' in config.heads:
             self.seg_head = Head(self.bert.config, config.seg_labels, head_config=config.head_config)
             self.heads['seg'] = self.seg_head
@@ -249,37 +150,19 @@ class LacModel(nn.Module):
             seg_pos_labels = [sl+pl for pl in config.pos_labels for sl in config.seg_labels]
             self.seg_pos_head = Head(self.bert.config, seg_pos_labels, head_config=config.head_config)
             self.heads['seg_pos'] = self.seg_pos_head
-        if 'bound' in config.heads:
-            self.bound_head = BoundDetectHead(self.bert.config, head_config=config.head_config)
-            self.heads['bound'] = self.bound_head
 
         self.model_config = config
-        self.dinfo: DistributedInfo = dinfo
+        self.device_config = device_config
 
         self.onnx_model = None
         self.post_process = None
 
-        self.corpus_map = {
-            'seg_as': '[unused2]',
-            'seg_cityu': '[unused3]',
-            'seg_cnc': '[unused4]',  # 没有
-            'seg_ctb': '[unused5]',
-            'seg_msr': '[unused6]',
-            'seg_pku': '[unused7]',
-            'seg_hanyuyuliaoku': '[unused8]',
-            'seg_keben': '[unused9]',
-            'seg_nlpcc': '[unused10]',
-            'seg_rmrb': '[unused11]',
-            'seg_sanku': '[unused12]',
-        }
-        self.to(dinfo.device)
-
-    def seg(self, sentences, verbose=False, grain=0.5, batch_size=16, split_long=True, show_progress_bar=True, punc=False, corpus_name=None, post_vmvd=False, vote_pattern=None):
+    def seg(self, sentences, verbose=False, grain=0.5, batch_size=16, split_long=True, show_progress_bar=True, punc=False, post_vmvd=False):
         # TODO: 写入文件进行分词，不然数据量太大会崩？
         if split_long:
-            sentences, input_id2raw_id = split_batch_with_group_texts(sentences)
+            sentences, input_id2raw_id = split_batch(sentences)
 
-        test_loader = DataLoader([(sent, corpus_name) for sent in sentences], batch_size=batch_size, shuffle=False)
+        test_loader = DataLoader(sentences, batch_size=batch_size, shuffle=False)
         test_loader.collate_fn = functools.partial(self.collate_fn, 'any')
         model = self
         model.eval()
@@ -287,7 +170,6 @@ class LacModel(nn.Module):
         res = {
             'seg': {'emissions': [], 'labels': [], 'spans': [], 'res': []},  # emission分类的各类分数, label分类的类别，span每个词的范围，seg最终结果
             'punc': {'emissions': [], 'labels': [], 'spans': [], 'res': []},
-            'bound': {'emissions': [], 'labels': [], 'spans': [], 'res': []},
             'pos': {'emissions': [], 'labels': [], 'res': []},  # pos最终结果
             'seg_pos': {'emissions': [], 'labels': [], 'res': []},
             'ner': {}
@@ -327,14 +209,10 @@ class LacModel(nn.Module):
             for seg_pos_res in res['seg_pos']['labels']:
                 seg['labels'].append([sp[0] for sp in seg_pos_res])
                 pos['labels'].append([sp[1:] for sp in seg_pos_res])
-        # 如果有bound头，测试会自动使用bound头作为seg结果，从seg里拿结果
-        if res['bound']['labels']:
-            seg = res['bound']
-            res['seg'] = res['bound']
 
         # seg任务输出
         if seg['labels']:
-            spans = [labels2spans(labels, model.seg_mode, vote_pattern=vote_pattern) for labels in seg['labels']]
+            spans = [labels2spans(labels, model.seg_mode) for labels in seg['labels']]
             seg['res'] = [spans2segs(s, p) for (s, p) in zip(sents, spans)]
             if split_long:
                 seg['labels'] = restore_batch(seg['labels'], input_id2raw_id)
@@ -360,7 +238,6 @@ class LacModel(nn.Module):
 
             # TODO：不使用model_config.pos_labels
             if 'vm' not in self.model_config.pos_labels and post_vmvd:
-                from deepthulac.seg.post_process import adjust_pos
                 pos['res'] = adjust_pos(pos['res'])
         return res
 
@@ -379,35 +256,72 @@ class LacModel(nn.Module):
         return outputs
 
     def forward(self, task, input_ids, labels=None, teacher_model=None, teacher_input_ids=None):
+        num_labels = len(self.heads[task].label2id)  # 高于此数值，为partial label表示
+
+        def partial_label_loss(logits, labels):
+            # 参考 https://github.com/mikigom/DNPL-PyTorch/blob/master/train.py#L124
+            full, partial = labels < num_labels, labels >= num_labels
+            full_loss = nn.CrossEntropyLoss(reduction='sum')(logits[full], labels[full])
+            sum_p = (F.softmax(logits[partial], dim=1) * ids2partial_label(labels[partial], num_labels)).sum(-1)  # 所有可能标签的概率
+            partial_loss = -torch.sum(torch.log(sum_p.clamp(0., 1.) + 1e-10))
+            return (full_loss + partial_loss) / len(logits)  # TODO: 确认logits是一维的
+
         logits = self.heads[task](self.forward_backbone(input_ids))
-        if labels is None:
-            return (logits,)
-        else:
-            loss = self.heads[task].loss_func(logits, labels, teacher_model, teacher_input_ids, task)
-            return (loss, logits)
+        outputs = (logits,)
+        if labels is not None:  # TODO: 抽象到head里
+            if self.heads[task].use_crf:
+                loss_mask = labels.gt(-1)  # NOTE padded_label=-1
+                loss = self.heads[task].crf(logits, labels, loss_mask) * (-1)
+            else:
+                loss_mask = labels.gt(-1)
+                loss_mask = loss_mask.view(-1) == 1
+                # 只对label实际存在的位置计算loss
+                active_logits = logits.view(-1, num_labels)[loss_mask]
+                active_labels = labels.view(-1)[loss_mask]
+
+                if torch.any(labels >= num_labels):  # 所有的标签都没有partial label，NOTE: 可以去掉？
+                    loss_fct = nn.CrossEntropyLoss()  # NOTE: = softmax + entropy
+                else:
+                    loss_fct = partial_label_loss
+
+                loss = loss_fct(active_logits, active_labels)
+
+                if teacher_model:
+                    teacher_model.eval()
+                    alpha = 0.95
+                    loss_fct = kd_ce_loss
+                    with torch.no_grad():
+                        # 词表不一样，不能用同一份input_data
+                        logits_teacher = teacher_model.heads[task](teacher_model.forward_backbone(teacher_input_ids))
+                    active_logits_teacher = logits_teacher.view(-1, num_labels)[loss_mask]
+                    loss_soft = loss_fct(active_logits, active_logits_teacher, temperature=1)
+                    # https://github.com/haitongli/knowledge-distillation-pytorch/blob/master/model/net.py
+                    # loss_soft = nn.KLDivLoss()(F.log_softmax(outputs/T, dim=1), F.softmax(active_logits_teacher/T, dim=1)) * ( T * T)
+                    loss = loss_soft*alpha + loss*(1. - alpha)
+
+            outputs = (loss,) + outputs
+        return outputs
 
     def batch_to_device(self, batch):
-        device = self.dinfo.device
+        device = self.device_config.device
         for i in range(len(batch)):
             if isinstance(batch[i], torch.Tensor):
                 batch[i] = batch[i].to(device)
         return batch
 
-    def collate_fn(self, task, batch):
-        # NOTE: 目前collate非常慢，影响到多卡训练了，瓶颈在一张卡collate上，要阻止只让一个卡collate
+    def collate_fn(self, task, batch):  # TODO: 加corpus tag
         # STEP1: tokens和labels都变成id
         sent_only = (task == 'any')  # none表示没有真实label标签, 数据集只有文本输入
         if sent_only:
-            sents, corpus_names = [x[0] for x in batch], [x[1] for x in batch]
+            sents = batch
         else:
-            sents, labels, corpus_names = [x[0] for x in batch], [x[1] for x in batch], [x[2] for x in batch]  # "李学勤", ['S', 'B', 'E'] -> [101, 3330, 2110, 1249]
+            sents, labels = [x[0] for x in batch], [x[1] for x in batch]  # "李学勤", ['S', 'B', 'E'] -> [101, 3330, 2110, 1249]
             labels = [[parse_label2id(t, self.heads[task].label2id) for t in tag] for tag in labels]
 
         input_ids = []
-        for sent, corpus_name in zip(sents, corpus_names):
+        for sent in sents:
             tokens = [self.tokenizer.tokenize(char) for char in sent]  # NOTE 主要做大小写转换
-            corpus_tag = self.corpus_map.get(corpus_name, '[CLS]')
-            tokens = [corpus_tag] + [token[0] if token else '[UNK]' for token in tokens]  # NOTE 一些非法字符例如 '' tokenize会变空[], 在convert_tokens_to_ids会导致这个位置缺失
+            tokens = ['[CLS]'] + [token[0] if token else '[UNK]' for token in tokens]  # NOTE 一些非法字符例如 '' tokenize会变空[], 在convert_tokens_to_ids会导致这个位置缺失
             input_ids.append(self.tokenizer.convert_tokens_to_ids(tokens))  # 不等于tokenizer.encode(tokens)[:-1]
             """ NOTE: tokenize + convert_tokens_to_ids 与 encode 的不同
                 由于label和sentence是逐字对齐的，不能用encode或encode_plus
@@ -434,29 +348,34 @@ class LacModel(nn.Module):
             labels = torch.tensor(labels, dtype=torch.long)
             return [input_ids, labels, sents]
 
-    def fit(self, train_config, train_loaders, dev_loaders, model_dir, evaluator, batch_order: List[int], teacher_model=None):
-        """
-        batch_order has the same length with the steps in one epoch. batch_order[i]代表第i个step使用哪个训练集的batch训练
-        """
+    def fit(self, train_config, train_loaders, dev_loaders, model_dir, evaluator, teacher_model=None):
         from transformers.optimization import get_cosine_schedule_with_warmup, AdamW  # import error on Apple M1
-        if not hasattr(train_config, 'epoch_num'):
-            train_config.epoch_num = 1
-        epoch_num = train_config.epoch_num
+
+        epoch_num = 1
         learning_rate = train_config.learning_rate
         weight_decay = train_config.weight_decay
         clip_grad = train_config.clip_grad
         batch_size = train_config.batch_size
 
+        device_type = self.device_config.device_type
+        local_rank = self.device_config.local_rank
+        device = self.device_config.device
+
+        for train_loader in train_loaders:
+            train_loader.collate_fn = functools.partial(self.collate_fn, train_loader.task)
+        data_iterators = [iter(dataloader) for dataloader in train_loaders]
+        for dev_loader in dev_loaders:
+            dev_loader.collate_fn = functools.partial(self.collate_fn, dev_loader.task)
+        if teacher_model:
+            train_loader_teacher = DataLoader(train_loader.dataset, batch_size=batch_size, num_workers=4)
+            train_loader_teacher.collate_fn = teacher_model.collate_fn
+            train_loader_teacher = iter(train_loader_teacher)
         model = self
+
         # 设置optimizer
         # model.named_parameters(): [bert, classifier, crf]
         bert_optimizer = list(model.bert.named_parameters())
-        classifier_optimizer = []
-        for task in model.heads:
-            if task == 'bound':
-                classifier_optimizer += list(model.heads[task].classifier_left_bound.named_parameters())+list(model.heads[task].classifier_right_bound.named_parameters())
-            else:
-                classifier_optimizer += list(model.heads[task].classifier.named_parameters())
+        classifier_optimizer = sum([list(model.heads[task].classifier.named_parameters()) for task in model.heads], [])
         no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
         optimizer_grouped_parameters = [
             {'params': [p for n, p in bert_optimizer if not any(nd in n for nd in no_decay)],
@@ -473,183 +392,115 @@ class LacModel(nn.Module):
                 optimizer_grouped_parameters += [{'params': model.heads[task].crf.parameters(), 'lr': learning_rate * 5}]
         optimizer = AdamW(optimizer_grouped_parameters, lr=learning_rate, correct_bias=False)
 
-        steps_per_epoch = len(batch_order)
+        steps_per_epoch = sum([len(dataloader) for dataloader in train_loaders])
         training_steps = epoch_num * steps_per_epoch
+        eval_steps = {train_config.eval_steps*i for i in range(100)} if hasattr(train_config, 'eval_steps') else {100*(2**i) for i in range(10)}
+        warmup_steps = train_config.warmup_steps if hasattr(train_config, 'warmup_steps') else int(0.1 * training_steps)  # 2 * len(train_loader)
+        scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=warmup_steps, num_training_steps=training_steps)
 
-        if hasattr(train_config, 'eval_steps'):
-            class LinearSteps:
-                def __contains__(self, item):
-                    return item > 0 and item % train_config.eval_steps == 0
-            eval_steps = LinearSteps()
-        else:
-            if hasattr(train_config, 'eval_exp_base'):
-                exp_base = train_config.eval_exp_base
-            else:
-                exp_base = 50
-
-            class ExpSteps: # 从base按2的指数倍
-                def __contains__(self, item):
-                    return (item > 0 and item % exp_base == 0 and (item//exp_base) & ((item//exp_base) - 1) == 0) or (item % 12800 == 0 and item != 0)
-            eval_steps = ExpSteps()
-
-        if not hasattr(train_config, 'warmup_steps'):
-            train_config.warmup_steps = 0
-        warmup_steps = train_config.warmup_steps 
-        warmup_steps = warmup_steps if type(warmup_steps) == int else int(warmup_steps * steps_per_epoch)  # 2 * len(train_loader)
-        logging.info(f'warmup_steps: {warmup_steps}')
-        lr_scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=warmup_steps, num_training_steps=training_steps)
-
-        accelerator = self.dinfo.accelerator
-        is_main = self.dinfo.is_main
-        if accelerator:
-            model, optimizer, lr_scheduler = accelerator.prepare(model, optimizer, lr_scheduler)
-            # model, optimizer = accelerator.prepare(model, optimizer)
-            for idx, loader in enumerate(train_loaders):
-                train_loaders[idx] = accelerator.prepare(loader)
-                train_loaders[idx].task = loader.task
+        if device_type == 'multigpu':
+            model = DistributedDataParallel(model, find_unused_parameters=True, device_ids=[local_rank], output_device=local_rank)
 
         def save_checkpoint(path):
-            if accelerator:
-                accelerator.unwrap_model(model).save(path)
-            else:
-                model.save(path)
-            logging.info("best model saved.")
+            #  选择一个进程保存
+            if local_rank == 0:
+                if device_type == 'multigpu':
+                    model.module.save(path)
+                else:
+                    model.save(path)
+                logging.info("best model saved.")
 
-        def evaluate_all():  # 以最后一个dev_loader的指标为准
-            examples = self.seg(hard_cases+funny_cases+long_cases+ancient_cases, batch_size=1, split_long=False)['seg']['res']
-            logging.info('\n'+'\n'.join(['/'.join(segs) for segs in examples]))
-            if 'pos' in self.heads:
-                examples = self.seg(pos_cases, batch_size=1, split_long=False)['pos']['res']
-                logging.info('\n'+'\n'.join(['/'.join(segs) for segs in examples]))
-                
+        def evaluate_all(): # 以最后一个dev_loader的指标为准
             for dev_loader in dev_loaders:
                 score = evaluator(dev_loader, self, save_result=False, saved_path=model_dir)
             return score
 
-        if is_main:
-            best_f1 = evaluate_all()
-
-        for train_loader in train_loaders:
-            train_loader.collate_fn = functools.partial(self.collate_fn, train_loader.task)
-        data_iterators = [iter(dataloader) for dataloader in train_loaders]
-        for dev_loader in dev_loaders:
-            dev_loader.collate_fn = functools.partial(self.collate_fn, dev_loader.task)
-        if teacher_model:
-            train_loader_teacher = DataLoader(train_loader.dataset, batch_size=batch_size, num_workers=4)
-            train_loader_teacher.collate_fn = teacher_model.collate_fn
-            train_loader_teacher = iter(train_loader_teacher)
+        best_f1 = evaluate_all()
 
         logging.info("--Start Training--")
         for epoch in range(1, epoch_num + 1):
             model.train()
             train_losses = 0
-            bar = tqdm(total=steps_per_epoch, disable=not is_main)
+            bar = tqdm(total=steps_per_epoch)
 
             # 实现Multitask learning训练方法 https://towardsdatascience.com/when-multi-task-learning-meet-with-bert-d1c49cc40a0c
-            for i, train_idx in enumerate(batch_order):  # batch是哪个train_loader的batch
-                data_iterator = data_iterators[train_idx]
-                try:
-                    batch_samples = next(data_iterator)
-                except StopIteration:
-                    data_iterators[train_idx] = iter(train_loaders[train_idx])
-                    batch_samples = next(data_iterators[train_idx])
+            batch_idx = sum([[i]*len(train_loader) for i, train_loader in enumerate(train_loaders)], [])
+            random.shuffle(batch_idx)
 
-                if accelerator:
-                    input_ids, labels, sents = batch_samples
-                    # print(self.tokenizer.convert_ids_to_tokens(input_ids[0]))
-                    # 由于只broadcast tensor，sent为空，见accelerate.data_loader.DataLoaderDispatcher._fetch_batches
-                else:
-                    input_ids, labels, sents = self.batch_to_device(batch_samples)
+            assert len(batch_idx) == steps_per_epoch
+            for i, train_idx in enumerate(batch_idx):  # batch是哪个train_loader的batch
+                data_iterator = data_iterators[train_idx]
+                batch_samples = next(data_iterator)
+                input_ids, labels, sents = self.batch_to_device(batch_samples)
 
                 if teacher_model:
                     teacher_input_ids, _, _ = self.batch_to_device(next(train_loader_teacher))
                     assert torch.equal(teacher_input_ids.gt(0).sum(-1), input_ids.gt(0).sum(-1))  # 内容token的长度一样
                 else:
                     teacher_input_ids = None
-                if accelerator:
-                    if accelerator.sync_gradients:
-                        bar.update()
-                    with accelerator.accumulate(model):
-                        loss = model(train_loaders[train_idx].task, input_ids, labels=labels, teacher_model=teacher_model, teacher_input_ids=teacher_input_ids)[0]
-                        train_losses += loss.item()
-                        model.zero_grad()
-                        continue
-                        loss.backward() # BUG: 极其慢
-                    # accelerator.backward(loss)
-                    continue
-                    nn.utils.clip_grad_norm_(parameters=model.parameters(), max_norm=clip_grad)  # gradient clipping
-                    optimizer.step()  # 更新参数
-                    lr_scheduler.step()
-                    with accelerator.accumulate(model):
-                        loss = model(train_loaders[train_idx].task, input_ids, labels=labels, teacher_model=teacher_model, teacher_input_ids=teacher_input_ids)[0]
-                        train_losses += loss.item()
-                        model.zero_grad()
-                        continue
-                        accelerator.backward(loss) # BUG: 极其慢 # https://huggingface.co/docs/accelerate/concept_guides/gradient_synchronization
-                        continue
-                        nn.utils.clip_grad_norm_(parameters=model.parameters(), max_norm=clip_grad)  # gradient clipping
-                        optimizer.step()  # 更新参数
-                        lr_scheduler.step()
-                        # optimizer.zero_grad()
-                    continue
-                    accelerator.wait_for_everyone()
-                    continue
-                else:
-                    loss = model(train_loaders[train_idx].task, input_ids, labels=labels, teacher_model=teacher_model, teacher_input_ids=teacher_input_ids)[0]
-                    train_losses += loss.item()
-                    model.zero_grad()
-                    loss.backward()
-                    nn.utils.clip_grad_norm_(parameters=model.parameters(), max_norm=clip_grad)  # gradient clipping
-                    optimizer.step()  # 更新参数
-                    lr_scheduler.step()
-                    bar.update()
 
-                if i in eval_steps and is_main:
-                    logging.info(f'lr: {round(lr_scheduler.get_last_lr()[0],7)*1e5:.2f}e-5')
-                    save_checkpoint(str(model_dir)+'/'+str(i*batch_size))
+                loss = model(train_loaders[train_idx].task, input_ids, labels=labels, teacher_model=teacher_model, teacher_input_ids=teacher_input_ids)[0]
+                train_losses += loss.item()
+                model.zero_grad()
+                loss.backward()
+                nn.utils.clip_grad_norm_(parameters=model.parameters(), max_norm=clip_grad)  # gradient clipping
+                optimizer.step()  # 更新参数
+                scheduler.step()
+                bar.update()
+
+                if i in eval_steps:
+                    save_checkpoint(model_dir+'/'+str((i+1)*batch_size))
                     evaluate_all()
 
-            if is_main:
-                train_loss = float(train_losses) / steps_per_epoch
-                logging.info(f"epoch: {epoch}, train loss: {train_loss}")
+            train_loss = float(train_losses) / steps_per_epoch
+            logging.info(f"epoch: {epoch}, train loss: {train_loss}")
+
+            if local_rank == 0:
                 f1 = evaluate_all()
                 if f1 - best_f1 > 1e-5:
                     best_f1 = f1
-                save_checkpoint(model_dir)
-        if is_main:
-            logging.info("--Complete trainning--")
+                    save_checkpoint(model_dir)
+        logging.info("--Complete trainning--")
 
     def add_user_dict(self, file: str):
-        from deepthulac.seg.post_process import UserDict
         self.post_process = UserDict(file)
 
     def save(self, path: str):
         os.makedirs(path, exist_ok=True)
         logger.info(f"save model to {path}")
         store_yaml(self.model_config, os.path.join(path, "config.yaml"))
-        self.bert.config.save_pretrained(path)
-        self.tokenizer.save_vocabulary(path)
+        if self.model_config.pretrained_bert_model == 'custom_pretrained':  # 自己预训练的模型存一下config.json
+            shutil.copyfile(f'{self.pretrained_model_dir}/config.json', os.path.join(path, "config.json"))
+            shutil.copyfile(f'{self.pretrained_model_dir}/vocab.txt', os.path.join(path, "vocab.txt"))
         torch.save(self.state_dict(), os.path.join(path, 'pytorch_model.bin'))
 
     @classmethod
-    def load(cls, path: str = '', device: Union[str, torch.device, DistributedInfo] = 'cpu', use_f16=False, cache_dir=None):
+    def load(cls, path: str = '', device: Union[str, Munch] = 'cpu', use_f16=False, cache_dir=None):
         from transformers import logging
-        from huggingface_hub import snapshot_download, hf_hub_download
+        from huggingface_hub import snapshot_download
         logging.set_verbosity_error()
         if not path:
-            # path = snapshot_download(repo_id="chengzl18/deepthulac-seg", revision='0d0f0a697a2223c653478673f0a9186ba1e6844b', cache_dir=cache_dir)
             path = snapshot_download(repo_id="chengzl18/deepthulac-seg", cache_dir=cache_dir)
-            # path = hf_hub_download(repo_id="chengzl18/deepthulac-seg", filename='pytorch_model.bin', cache_dir='.cachecache')
-        dinfo = device if isinstance(device, DistributedInfo) else DistributedInfo(device=device)
+        if device == 'cpu':
+            use_f16 = False
+        if type(device) == str:
+            assert device == 'cpu' or device.startswith('cuda')
+            device_type = 'cpu' if device == 'cpu' else 'gpu'
+
+            _, local_rank = set_device(device_type)  # TODO: device ?
+
+            device_config = Munch()
+            device_config.device_type = device_type
+            device_config.local_rank = local_rank
+            device_config.device = device
+        else:
+            device_config = device
         config = load_yaml(os.path.join(path, "config.yaml"))
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            model = cls(config, dinfo, pretrained_path=path)
-        # TODO: 这还需要load和todevice吗
-        model.load_state_dict(torch.load(os.path.join(path, 'pytorch_model.bin'), map_location=dinfo.device))
-        model.to(device=dinfo.device)
-        if device == 'cpu':
-            use_f16 = False
+            model = cls(config, device_config, checkpoint_dir=path)
+        model.load_state_dict(torch.load(os.path.join(path, 'pytorch_model.bin'), map_location=device_config.device))
+        model.to(device=device_config.device)
         if use_f16:
             model.quantize_f16()
         return model
@@ -661,7 +512,7 @@ class LacModel(nn.Module):
         self.quantize_f16()
         # https://github.com/microsoft/onnxruntime/blob/main/onnxruntime/python/tools/transformers/notebooks/PyTorch_Bert-Squad_OnnxRuntime_GPU.ipynb
         export_model_path = '.cache/temp.onnx'
-        device = self.dinfo.device
+        device = self.device_config.device
 
         sentences = ['我爱北京天安门。']
         test_dataset = make_pair(sentences, ['E'*len(sent) for sent in sentences])

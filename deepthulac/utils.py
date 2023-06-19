@@ -33,7 +33,10 @@ def init_distributed():
     global dinfo
     if "LOCAL_RANK" in os.environ:
         # split the batches of the original data loader across devices, batch_size= gpu_num * per_gpu_batch_size
-        accelerator = Accelerator(split_batches=True, kwargs_handlers=[DistributedDataParallelKwargs(find_unused_parameters=True)])
+        # 如果没有用find_unused_parameters=True，那么如果有模块没用上，就会报错，https://github.com/pytorch/pytorch/issues/43259
+        # 如果split_batches=True分发数据用了太多的时间，split batches总是会让主进程分合数据
+        # 默认Iterable dispatch_batches=True，我们改成了false，因为split_batches=True, 我们就不要让主进程再去dispatch_batches了。
+        accelerator = Accelerator(split_batches=True, dispatch_batches=False, kwargs_handlers=[DistributedDataParallelKwargs(find_unused_parameters=True)])
         dinfo = DistributedInfo(accelerator, accelerator.num_processes, accelerator.process_index, accelerator.is_local_main_process, accelerator.device)
         dinfo.world_size = accelerator.num_processes
         dinfo.local_rank = accelerator.process_index

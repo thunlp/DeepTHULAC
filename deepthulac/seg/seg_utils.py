@@ -165,5 +165,6 @@ def parse_label2id(t, label2id):  # 将label字符串转换为label_id，考虑�
     else:  # NOTE 约定用/分隔表示partial label
         partial = [0] * len(label2id)
         for label in t.split('/'):
+            print('ERROR', label, label2id.get(label))
             partial[label2id.get(label)] = 1
         return partial_label2id(partial)

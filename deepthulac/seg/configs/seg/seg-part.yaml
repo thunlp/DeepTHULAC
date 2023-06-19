@@ -1,0 +1,43 @@
+# 模型相关参数
+# CUDA_VISIBLE_DEVICES=6 python deepthulac/seg/train.py --config_path=deepthulac/seg/configs/seg/seg-part.yaml
+pretrained_bert_model: /data03/private/chengzhili/pretrain/output/2023-04-09_04-22-50/save
+# bert-base-chinese
+# /data03/private/chengzhili/pretrain/output/2023-04-09_04-22-50/save/step_740000
+# /data03/private/chengzhili/pretrain/output/2023-04-07_05-25-49/save/step_480000
+# /data03/private/chengzhili/pretrain/output/2023-03-29_03-10-18/save/step_155000 
+# /data03/private/chengzhili/pretrain/output/2023-03-25_08-10-20/save/step_75000 # ./pretrained # output/2023-03-14_02-19-00_tokenizer未繁简/save #output/2023-03-14_02-19-00_tokenizer未繁简/save/step_360000 #/data03/private/chengzhili/pretrain/output/2023-03-19_05-40-03/save/step_255000 #bert-base-chinese # chengzl18/bert-base-chinese-char-cm # bert-base-chinese
+heads:
+  - seg
+seg_labels:
+  - B
+  - M
+  - E
+  - S
+head_config:
+  use_crf: False
+  layers_num: 1
+  dropout: 0.1
+
+# 训练相关参数
+saved_path: output/seg
+epoch_num: 1 #1
+learning_rate: 1.0e-05 #2.0e-05
+warmup_steps: 0 #0 # 如果是int代表步数，如果是float，代表多少倍的steps_per_epoch
+weight_decay: 0.01
+clip_grad: 5
+
+batch_size: 32
+
+data_strategy: shuffle_batches # shuffle_batches
+# 训练数据
+train_datasets:
+  seg_ours:
+    dir: data
+    repeat_times: 1
+  #seg_ours-rm:  # for data augmentation
+  #  dir: data
+  #  repeat_times: 1
+dev_datasets:
+  seg_ours:
+    dir: data
+part_data: True

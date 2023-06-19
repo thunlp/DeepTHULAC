@@ -1,6 +1,6 @@
 # 模型相关参数
-# CUDA_VISIBLE_DEVICES=0 python deepthulac/seg/train.py --config_path deepthulac/seg/configs/seg/seg_punc_dict_pretrain.yaml
-# accelerate launch --gpu_ids 0,1,2,3 --num_processes 4 --mixed_precision bf16 deepthulac/seg/train.py  --config_path deepthulac/seg/configs/seg/seg_punc_dict_pretrain.yaml
+# CUDA_VISIBLE_DEVICES=1 python deepthulac/seg/train.py --config_path deepthulac/seg/configs/seg/seg_punc_dict_pretrain.yaml
+# accelerate launch --gpu_ids 0,1,2,3,4,5,6,7 --num_processes 8 --mixed_precision bf16 deepthulac/seg/train.py  --config_path deepthulac/seg/configs/seg/seg_punc_dict_pretrain.yaml
 pretrained_bert_model: bert-base-chinese # bert-base-chinese #./pretrained # 模型路径或huggingface的模型
 load_seg_pretrain: output/_good_checkpoint/sup_pretrain
 heads:
@@ -69,14 +69,14 @@ train_datasets:
     continuous_batches: 1
     repeat_times: 1
     extra_info: False ##??
-  seg_zuozhuan: # 别别别，拉拉拉
-    dir: data
-    continuous_batches: 1
-    repeat_times: 1
-  seg_designed: # 别别别，拉拉拉
-    dir: data
-    continuous_batches: 1
-    repeat_times: 1
+  #seg_zuozhuan: # 别别别，拉拉拉
+  #  dir: data
+  #  continuous_batches: 1
+  #  repeat_times: 1
+  #seg_designed: # 别别别，拉拉拉
+  #  dir: data
+  #  continuous_batches: 1
+  #  repeat_times: 1
   #seg_zuozhuan-rm: # 别别别，拉拉拉
   #  dir: data
   #  continuous_batches: 1

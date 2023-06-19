@@ -33,6 +33,9 @@ def run_train(config_file):
     else:
         saved_path = None
 
+    if dinfo.accelerator:
+        config.batch_size *= dinfo.world_size
+
     data_strategy = getattr(config, 'data_strategy', 'shuffle_batches')
     train_loaders = []
     batch_order, loop_times, repeat_times = [], 0, []
@@ -43,13 +46,13 @@ def run_train(config_file):
         dataset_config.samples_num = 1600 if config.part_data else 0
         train_loader = build_dataloader(dataset_config, config.heads, batch_size=config.batch_size)
         train_loaders.append(train_loader)
-        if data_strategy=='continuous_batches':
+        if data_strategy == 'continuous_batches':
             continuous_batches = dataset_config.continuous_batches
             batch_order.extend([i]*continuous_batches)
             loop_times = max(loop_times, math.ceil(len(train_loader)/continuous_batches))
-        elif data_strategy=='shuffle_batches':
+        elif data_strategy == 'shuffle_batches':
             batch_order.extend([i]*len(train_loader)*dataset_config.repeat_times)
-        elif data_strategy=='shuffle_samples':
+        elif data_strategy == 'shuffle_samples':
             repeat_times.append(dataset_config.repeat_times)
     if data_strategy == 'continuous_batches':
         batch_order = batch_order * loop_times
@@ -69,9 +72,9 @@ def run_train(config_file):
         dev_loaders.append(dev_loader)
 
     log('loading model')
-    
+
     if hasattr(config, 'load_seg_pretrain'):
-        load_path = config.load_seg_pretrain # +'/'+config.saved_path.split('/')[-1]
+        load_path = config.load_seg_pretrain
         if not os.path.exists(load_path):
             seg_pretrain = LacModel.load(config.load_seg_pretrain)
             model = LacModel(config, DistributedInfo(device='cpu'), config.pretrained_bert_model)
@@ -81,9 +84,9 @@ def run_train(config_file):
             model.save(load_path)
         model = LacModel.load(load_path, dinfo.device)
         model.model_config = config
+        model.dinfo = dinfo
     else:
         model = LacModel(config, dinfo, config.pretrained_bert_model)
-        
 
     # model = LacModel.load(path, 'cuda:0', use_f16=False) # 加载训练好的模型
     evaluator = functools.partial(SegEvaluator.eval_model, split_long=False)

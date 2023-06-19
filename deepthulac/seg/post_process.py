@@ -34,6 +34,8 @@ class UserDict:
         return segs
 
     def adjust_seg(self, pred_segs, num_workers=12):
+        res = [self._adjust_seg(pred_seg) for pred_seg in pred_segs]
+        return res
         from multiprocessing import Pool
         with Pool(num_workers) as p:
             res = p.map(self._adjust_seg, pred_segs)
