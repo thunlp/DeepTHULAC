@@ -1,5 +1,7 @@
 # 模型相关参数
-pretrained_bert_model: custom_pretrained
+# accelerate launch --gpu_ids 0,1,2,3,4,5,6,7 --num_processes 8 --mixed_precision fp16 deepthulac/seg/train.py --config_path=deepthulac/seg/configs/seg/dict.yaml
+# CUDA_VISIBLE_DEVICES=5 python deepthulac/seg/train.py --config_path=deepthulac/seg/configs/seg/dict.yaml
+pretrained_bert_model: /data03/private/chengzhili/pretrain/output/2023-06-09_21-23-00/save # custom_pretrained
 heads:
   - seg
 seg_labels:
@@ -13,19 +15,26 @@ head_config:
 
 # 训练相关
 saved_path: output/dict
-learning_rate: 1.0e-05
-# warmup_steps: 0
-weight_decay: 0.01
+learning_rate: 1.0e-04 #1.0e-05
+warmup_steps: 0
+weight_decay: 0 #0.01
 clip_grad: 5
 
-batch_size: 32
+batch_size: 36
+eval_steps: 800
 
+label_mode: ME
 train_datasets:
   dict_wantwords:
     dir: data
     continuous_batches: 300
+    repeat_times: 1
     extra_info: False
 dev_datasets:
-  seg_ours:
+  seg_pku:
     dir: data
-part_data: True
+  seg_msr:
+    dir: data
+  #seg_ours:
+  #  dir: data
+part_data: False

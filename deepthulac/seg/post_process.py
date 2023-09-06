@@ -34,6 +34,7 @@ class UserDict:
         return segs
 
     def adjust_seg(self, pred_segs, num_workers=12):
+        # TODO: 复现之前出错的情况，并且让用户可设定进程数
         res = [self._adjust_seg(pred_seg) for pred_seg in pred_segs]
         return res
         from multiprocessing import Pool

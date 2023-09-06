@@ -1,8 +1,16 @@
 # 模型相关参数
 # accelerate launch --gpu_ids 0,1,2,3,4,5,6,7 --num_processes 8 --mixed_precision fp16 deepthulac/seg/train.py --config_path=deepthulac/seg/configs/seg/seg.yaml
 # accelerate launch --gpu_ids 6 --num_processes 1 --mixed_precision fp16 deepthulac/seg/train.py --config_path=deepthulac/seg/configs/seg/seg.yaml
-# CUDA_VISIBLE_DEVICES=2 python deepthulac/seg/train.py --config_path=deepthulac/seg/configs/seg/seg.yaml
-pretrained_bert_model: /data03/private/chengzhili/pretrain/output/2023-06-09_21-23-00/save
+# CUDA_VISIBLE_DEVICES=3 python deepthulac/seg/train.py --config_path=deepthulac/seg/configs/seg/seg-eval.yaml
+pretrained_bert_model: bert-base-chinese
+
+# pretrained_bert_model: 'bert-base-chinese'
+# pretrained_bert_model: 'hfl/chinese-bert-wwm-ext'
+# pretrained_bert_model: '/data03/private/chengzhili/pretrain/output/2023-06-09_21-23-00/save/epoch_0'
+# pretrained_bert_model: '/data03/private/chengzhili/pretrain/output/2023-06-17_02-48-47/save/epoch_0'
+# pretrained_bert_model: '/data03/private/chengzhili/pretrain/output/2023-04-09_04-22-50 训5个epoch/save/epoch_0'
+# pretrained_bert_model: '/data03/private/chengzhili/pretrain/output/2023-05-14_23-42-06 mm/save/epoch_0'
+
 # /data03/private/chengzhili/pretrain/output/2023-05-22_18-54-26/save/step_1205000
 # bert-base-chinese
 # /data03/private/chengzhili/pretrain/output/2023-05-14_23-42-06/save
@@ -30,38 +38,32 @@ head_config:
   dropout: 0.1
 
 # 训练相关参数
-saved_path: output/seg
+saved_path: output/seg_eval
 epoch_num: 1 #1
 learning_rate: 2.0e-05 #2.0e-05
 warmup_steps: 0.8 #0 # 如果是int代表步数，如果是float，代表多少倍的steps_per_epoch
 weight_decay: 0.01
 clip_grad: 5
 
-batch_size: 42
+batch_size: 32
 
 data_strategy: shuffle_batches # shuffle_batches
 # 训练数据
 label_mode: ME
 train_datasets:
-  seg_ours:
-    dir: data
-    repeat_times: 3
-  #seg_zuozhuan:
+  #seg_pku:
   #  dir: data
-  #  continuous_batches: 1
   #  repeat_times: 1
-  dict_wantwords:
-    dir: data
-    repeat_times: 1
   seg_zuozhuan:
     dir: data
     continuous_batches: 1
-    repeat_times: 2
-  #seg_ours-rm:  # for data augmentation
-  #  dir: data
-  #  repeat_times: 1
+    repeat_times: 1
 
 dev_datasets:
-  seg_ours:
+  #seg_pku:
+  #  dir: data
+  seg_zuozhuan-a:
     dir: data
+    continuous_batches: 1
+    repeat_times: 1
 part_data: False #True

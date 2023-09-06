@@ -10,13 +10,6 @@ from deepthulac.utils import log, print_green
 import warnings
 import sys
 
-""" Training examples:
-CUDA_VISIBLE_DEVICES=2 python deepthulac/seg/train.py
-accelerate launch --gpu_ids 0 --num_processes 1 --mixed_precision fp16 deepthulac/seg/train.py
-accelerate launch --gpu_ids 6,7 --num_processes 2 --mixed_precision bf16 deepthulac/seg/train.py
-accelerate launch --gpu_ids 2,3,4,5 --num_processes 4 --mixed_precision bf16 deepthulac/seg/train.py
-accelerate launch --gpu_ids 0,1,2,3,4,5 --num_processes 6 --mixed_precision fp16 deepthulac/seg/train.py
-"""
 warnings.filterwarnings('ignore')
 dinfo = init_distributed()
 set_seed(42)
@@ -37,13 +30,16 @@ def run_train(config_file):
         config.batch_size *= dinfo.world_size
 
     data_strategy = getattr(config, 'data_strategy', 'shuffle_batches')
+    label_mode = getattr(config, 'label_mode', 'BMES')
     train_loaders = []
     batch_order, loop_times, repeat_times = [], 0, []
     for i, dataset in enumerate(config.train_datasets):
         dataset_config = config.train_datasets[dataset]
         dataset_config.name = dataset
         dataset_config.split = 'train'
-        dataset_config.samples_num = 1600 if config.part_data else 0
+        if not hasattr(dataset_config, 'samples_num'):
+            dataset_config.samples_num = 1600 if config.part_data else 0
+        dataset_config.mode = label_mode
         train_loader = build_dataloader(dataset_config, config.heads, batch_size=config.batch_size)
         train_loaders.append(train_loader)
         if data_strategy == 'continuous_batches':
@@ -67,7 +63,8 @@ def run_train(config_file):
         dataset_config = config.dev_datasets[dataset]
         dataset_config.name = dataset
         dataset_config.split = 'test'
-        dataset_config.samples_num = 60 if config.part_data else 120  # 这个会影响训练过程中的eval和最终eval结果不一样的问题
+        dataset_config.samples_num = 60 if config.part_data else 1000  # 这个会影响训练过程中的eval和最终eval结果不一样的问题
+        dataset_config.mode = label_mode
         dev_loader = build_dataloader(dataset_config, config.heads, batch_size=config.batch_size)
         dev_loaders.append(dev_loader)
 

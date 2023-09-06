@@ -31,11 +31,18 @@ class DistributedInfo:
 
 def init_distributed():
     global dinfo
-    if "LOCAL_RANK" in os.environ:
-        # split the batches of the original data loader across devices, batch_size= gpu_num * per_gpu_batch_size
+    if "LOCAL_RANK" in os.environ or 'ACCELERATE_MIXED_PRECISION' in os.environ:
+        # split_batches
+        # split_batches=False(默认)，将dataloader的8个batch拼成1个，batch=concatenate(batches, dim=0)，等价于一张显存超大的单卡，用batch_size=32*8训练(单卡的batch_size为32)，要求每个小batch(所有训练样本)的序列长度一样。
+        # split_batches=True，将dataloader的1个batch拆成8个
+
+        # dispatch_batches
+        # dispatch_batches=True(IterableDataset默认)，(只一个进程进行collate的开销+广播通讯开销，导致性能很差)只让主进程迭代batch，然后concat，然后广播给其他进程。同时，这里附带一个操作：如果最后一个batch不满，还会和第一个batch拼起来，这就要求所有训练样本的序列长度一样，或者DataLoader的drop_last为True。
+        # dispatch_batches=False，各个进程迭代各自的batch（经验证，IterableDataset迭代时各个进程的batch样本不重复，不重不漏，是正确的）
+
         # 如果没有用find_unused_parameters=True，那么如果有模块没用上，就会报错，https://github.com/pytorch/pytorch/issues/43259
-        # 如果split_batches=True分发数据用了太多的时间，split batches总是会让主进程分合数据
-        # 默认Iterable dispatch_batches=True，我们改成了false，因为split_batches=True, 我们就不要让主进程再去dispatch_batches了。
+        # 设置os.environ['TORCH_DISTRIBUTED_DEBUG'] = 'INFO', 取消set_logger以后发现下面两个模块没有梯度，正常
+        # Parameters which did not receive grad for rank 0: bert.pooler.dense.bias, bert.pooler.dense.weight
         accelerator = Accelerator(split_batches=True, dispatch_batches=False, kwargs_handlers=[DistributedDataParallelKwargs(find_unused_parameters=True)])
         dinfo = DistributedInfo(accelerator, accelerator.num_processes, accelerator.process_index, accelerator.is_local_main_process, accelerator.device)
         dinfo.world_size = accelerator.num_processes

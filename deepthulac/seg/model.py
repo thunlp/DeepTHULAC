@@ -216,10 +216,10 @@ class LacModel(nn.Module):
         custom = os.path.exists(pretrained_path)
         if custom:
             self.pretrained_path = pretrained_path
-            # tokenizer = BertTokenizer.from_pretrained(f'{self.pretrained_path}/vocab.txt')
-            tokenizer = AutoTokenizer.from_pretrained(f'{self.pretrained_path}', trust_remote_code=True) # 这个我自己写了tokenizer
+            # tokenizer = BertTokenizer.from_pretrained(f'{self.pretrained_path}', trust_remote_code=True, use_fast=False) # cctokenizer
+            tokenizer = AutoTokenizer.from_pretrained(f'{self.pretrained_path}', trust_remote_code=True) # cctokenizer
         else:
-            tokenizer = AutoTokenizer.from_pretrained(config.pretrained_bert_model)
+            tokenizer = AutoTokenizer.from_pretrained(config.pretrained_bert_model) # TODO: use_fast=False?
         super(LacModel, self).__init__()
 
         self.bert = bert
@@ -238,7 +238,7 @@ class LacModel(nn.Module):
         if 'seg' in config.heads:
             self.seg_head = Head(self.bert.config, config.seg_labels, head_config=config.head_config)
             self.heads['seg'] = self.seg_head
-        self.seg_mode = 'BMES' if len(config.seg_labels) == 4 else 'EN'
+        self.seg_mode = 'BMES' if len(config.seg_labels) == 4 else 'ME'
         if 'punc' in config.heads:  # 标点符号
             self.punc_head = Head(self.bert.config, config.punc_labels, head_config=config.head_config)
             self.heads['punc'] = self.punc_head
@@ -394,7 +394,6 @@ class LacModel(nn.Module):
         return batch
 
     def collate_fn(self, task, batch):
-        # NOTE: 目前collate非常慢，影响到多卡训练了，瓶颈在一张卡collate上，要阻止只让一个卡collate
         # STEP1: tokens和labels都变成id
         sent_only = (task == 'any')  # none表示没有真实label标签, 数据集只有文本输入
         if sent_only:
@@ -421,6 +420,7 @@ class LacModel(nn.Module):
         # STEP2: input_ids和labels按最大长度进行pad
         batch_size = len(batch)
         max_length = max([len(ids) for ids in input_ids])
+        # max_length = 512 # TODO: 这个会在训练和测试时有很大的gap!!？ padding的0是不是需要呢应该用attention mask?而不是0的padding来做！
         for i in range(batch_size):
             padded_length = max_length - len(input_ids[i])  # 始终是input_ids比labels长1（加了CLS）
             input_ids[i] += [0]*padded_length  # NOTE padded_input_id=0
@@ -503,7 +503,6 @@ class LacModel(nn.Module):
         is_main = self.dinfo.is_main
         if accelerator:
             model, optimizer, lr_scheduler = accelerator.prepare(model, optimizer, lr_scheduler)
-            # model, optimizer = accelerator.prepare(model, optimizer)
             for idx, loader in enumerate(train_loaders):
                 train_loaders[idx] = accelerator.prepare(loader)
                 train_loaders[idx].task = loader.task
@@ -556,8 +555,12 @@ class LacModel(nn.Module):
 
                 if accelerator:
                     input_ids, labels, sents = batch_samples
+                    # 当dispatch_batches=True时，由于主进程只广播tensor，sent为空，见accelerate.data_loader.DataLoaderDispatcher._fetch_batches
                     # print(self.tokenizer.convert_ids_to_tokens(input_ids[0]))
-                    # 由于只broadcast tensor，sent为空，见accelerate.data_loader.DataLoaderDispatcher._fetch_batches
+
+                    # 当dispatch_batches=False时，每个进程各自处理，有sents
+                    # print(self.dinfo.local_rank)
+                    # print(sents)
                 else:
                     input_ids, labels, sents = self.batch_to_device(batch_samples)
 
@@ -566,44 +569,21 @@ class LacModel(nn.Module):
                     assert torch.equal(teacher_input_ids.gt(0).sum(-1), input_ids.gt(0).sum(-1))  # 内容token的长度一样
                 else:
                     teacher_input_ids = None
+    
+                loss = model(train_loaders[train_idx].task, input_ids, labels=labels, teacher_model=teacher_model, teacher_input_ids=teacher_input_ids)[0]
+                train_losses += loss.item()
+                model.zero_grad()
                 if accelerator:
-                    if accelerator.sync_gradients:
-                        bar.update()
-                    with accelerator.accumulate(model):
-                        loss = model(train_loaders[train_idx].task, input_ids, labels=labels, teacher_model=teacher_model, teacher_input_ids=teacher_input_ids)[0]
-                        train_losses += loss.item()
-                        model.zero_grad()
-                        continue
-                        loss.backward() # BUG: 极其慢
-                    # accelerator.backward(loss)
-                    continue
-                    nn.utils.clip_grad_norm_(parameters=model.parameters(), max_norm=clip_grad)  # gradient clipping
-                    optimizer.step()  # 更新参数
-                    lr_scheduler.step()
-                    with accelerator.accumulate(model):
-                        loss = model(train_loaders[train_idx].task, input_ids, labels=labels, teacher_model=teacher_model, teacher_input_ids=teacher_input_ids)[0]
-                        train_losses += loss.item()
-                        model.zero_grad()
-                        continue
-                        accelerator.backward(loss) # BUG: 极其慢 # https://huggingface.co/docs/accelerate/concept_guides/gradient_synchronization
-                        continue
-                        nn.utils.clip_grad_norm_(parameters=model.parameters(), max_norm=clip_grad)  # gradient clipping
-                        optimizer.step()  # 更新参数
-                        lr_scheduler.step()
-                        # optimizer.zero_grad()
-                    continue
-                    accelerator.wait_for_everyone()
-                    continue
+                    accelerator.backward(loss)
                 else:
-                    loss = model(train_loaders[train_idx].task, input_ids, labels=labels, teacher_model=teacher_model, teacher_input_ids=teacher_input_ids)[0]
-                    train_losses += loss.item()
-                    model.zero_grad()
                     loss.backward()
-                    nn.utils.clip_grad_norm_(parameters=model.parameters(), max_norm=clip_grad)  # gradient clipping
-                    optimizer.step()  # 更新参数
-                    lr_scheduler.step()
-                    bar.update()
+                nn.utils.clip_grad_norm_(parameters=model.parameters(), max_norm=clip_grad)  # gradient clipping
+                optimizer.step()  # 更新参数
+                lr_scheduler.step()
+                bar.update()
 
+                if accelerator:
+                    accelerator.wait_for_everyone()
                 if i in eval_steps and is_main:
                     logging.info(f'lr: {round(lr_scheduler.get_last_lr()[0],7)*1e5:.2f}e-5')
                     save_checkpoint(str(model_dir)+'/'+str(i*batch_size))
@@ -627,26 +607,23 @@ class LacModel(nn.Module):
         os.makedirs(path, exist_ok=True)
         logger.info(f"save model to {path}")
         store_yaml(self.model_config, os.path.join(path, "config.yaml"))
-        self.bert.config.save_pretrained(path)
-        self.tokenizer.save_vocabulary(path)
-        torch.save(self.state_dict(), os.path.join(path, 'pytorch_model.bin'))
+        self.bert.save_pretrained(path)
+        self.tokenizer.save_pretrained(path)
 
     @classmethod
     def load(cls, path: str = '', device: Union[str, torch.device, DistributedInfo] = 'cpu', use_f16=False, cache_dir=None):
         from transformers import logging
-        from huggingface_hub import snapshot_download, hf_hub_download
+        from huggingface_hub import snapshot_download
         logging.set_verbosity_error()
         if not path:
-            # path = snapshot_download(repo_id="chengzl18/deepthulac-seg", revision='0d0f0a697a2223c653478673f0a9186ba1e6844b', cache_dir=cache_dir)
             path = snapshot_download(repo_id="chengzl18/deepthulac-seg", cache_dir=cache_dir)
-            # path = hf_hub_download(repo_id="chengzl18/deepthulac-seg", filename='pytorch_model.bin', cache_dir='.cachecache')
         dinfo = device if isinstance(device, DistributedInfo) else DistributedInfo(device=device)
         config = load_yaml(os.path.join(path, "config.yaml"))
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             model = cls(config, dinfo, pretrained_path=path)
         # TODO: 这还需要load和todevice吗
-        model.load_state_dict(torch.load(os.path.join(path, 'pytorch_model.bin'), map_location=dinfo.device))
+        model.load_state_dict(torch.load(os.path.join(path, 'pytorch_model.bin'), map_location=dinfo.device), strict=False)
         model.to(device=dinfo.device)
         if device == 'cpu':
             use_f16 = False

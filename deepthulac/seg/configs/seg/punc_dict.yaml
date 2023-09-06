@@ -1,37 +1,50 @@
 # 模型相关参数
-pretrained_bert_model: custom_pretrained
+# accelerate launch --gpu_ids 0,1,2,3,4,5,6,7 --num_processes 8 --mixed_precision fp16 deepthulac/seg/train.py --config_path=deepthulac/seg/configs/seg/punc_dict.yaml
+pretrained_bert_model: /data03/private/chengzhili/pretrain/output/2023-06-09_21-23-00/save
 heads:
   - seg
-  - punc
+  # - punc
 seg_labels:
   - B
   - M
   - E
   - S
-punc_labels:
-  - B
-  - M
-  - E
-  - S
+# punc_labels:
+#   - B
+#   - M
+#   - E
+#   - S
 head_config:
   use_crf: False # 对于不完全标签的训练，不能用crf
   layers_num: 1
 
 # 训练相关
 saved_path: output/punc_dict
-learning_rate: 1.0e-07
-# warmup_steps: 0
+# learning_rate: 1.0e-07
+learning_rate: 1.0e-05
+warmup_steps: 0
 weight_decay: 0.01
 clip_grad: 5
 
-batch_size: 32
+batch_size: 36
 
+label_mode: ME
 train_datasets:
-  punc_baidubaike0rs:
+  #punc_baidubaike0rs:
+  #  dir: data
+  #  repeat_times: 1
+  #  samples_num: 1154895
+  punc_baidubaike0rm:
     dir: data
+    repeat_times: 1
+    samples_num: 554895 # 1154895
   dict_wantwords:
     dir: data
+    repeat_times: 1
+    extra_info: False
 dev_datasets:
-  seg_ours:
+  seg_pku:
+    dir: data
+  seg_msr:
     dir: data
 part_data: False

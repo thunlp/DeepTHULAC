@@ -56,7 +56,7 @@ store_lines([' '.join(w) for w in results], 'results.txt')
 
 ```python
 text = '醋酸氟轻松是一种皮质类固醇，主要用于治疗皮肤病，减少皮肤炎症和缓解瘙痒。'
-print(lac.seg([text])['seg']['res']) # 醋酸氟, 轻松, ...
+print(lac.seg([text])['seg']['res']) # 醋酸, 氟, 轻松, ...
 
 # 加入用户自己提供的词表, 一行一个词，例如化学词表.txt中包含词'醋酸氟轻松'
 lac.add_user_dict('化学词表.txt')

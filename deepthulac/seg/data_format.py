@@ -18,6 +18,7 @@ import random
 import logging
 from deepthulac.utils import timer
 
+
 class LacDataset(IterableDataset):
     @typechecked
     def __init__(self, corpus_name: str, path: str, line_processor: Callable, lines_num: int = 0, file_order_reverse=False):
@@ -43,34 +44,16 @@ class LacDataset(IterableDataset):
         self.corpus_name = corpus_name
 
     def __iter__(self):
-        import time
         index = -1
-        
         for file in self.files:
             logging.info(f'{file} start')
             with open(file, 'r', encoding='utf-8') as f:
-                start_time = time.perf_counter()
                 for line in f:
                     index += 1
                     if index == self.lines_num:
                         return
-
-                    # print(index, end=' ')
-                    """
-                    if index%(32*8)==0:
-                        end_time = time.perf_counter()
-                        total_time = end_time - start_time
-                        start_time=end_time
-                        #print()
-                        print(get_dinfo().local_rank, total_time)"""
-                    # print(self.line_processor(line.strip('\n')))
-                    train_sample = self.line_processor(line.strip('\n')) # 这个处理很快, 主要是collate非常慢
-                    # print(train_sample)
+                    train_sample = self.line_processor(line.strip('\n'))  # 这个处理很快, 主要是collate慢
                     if train_sample:
-                        # chars = np.array([ord(x) for x in train_sample[0]])
-                        # labels = np.array([ord(x) for x in train_sample[1]])
-                        # yield chars
-                        # yield (chars, )+(self.corpus_name, )
                         yield train_sample+(self.corpus_name, )
             logging.info(f'{file} end')
 
@@ -113,31 +96,39 @@ def make_pair(chars, labels):
 MAX_LEN = 511
 
 
-def seg_line_processor(line, mode='BMES'):
+def seg_line_processor(line, mode: Literal["BMES", "ME"]):
     # NOTE: 分词数据的表示 用单个空格表示分隔，句首末都没有空格
     """ file: 空格分隔的分词训练数据的一行，处理为模型训练的标签
     """
-    assert mode in {'BMES', 'EN'}
     chars = line.replace(" ", "")
     labels = segs2labels(line.split(' '), mode)
     assert len(labels) == len(chars)
-    try:
-        assert len(chars) <= MAX_LEN
-    except AssertionError:
-        print(line)
-        print(len(chars))
+    assert len(chars) <= MAX_LEN
     return (chars, labels)
 
 
-def punc_line_processor(line, unified=False):
+def punc_line_processor(line, mode: Literal["BMES", "ME"], use_partial):
     # unified: 标点的标签是否处理得和分词意义统一，即处理为B/S E/S U S
     # M标签变成了U
-    (chars, labels) = seg_line_processor(line)
-    if unified:  # 和分词保持一样的标签
+    (chars, labels) = seg_line_processor(line, mode)
+    if use_partial:  # 没有punc头，并且希望和分词保持一样的标签
         labels = [{'M': 'U', 'B': 'B/S', 'E': 'E/S', 'S': 'S'}[label] for label in labels]
     else:  # B=B/S, E=E/S的标签体系
+        """
+        # 2023 06 10
+        import random
+        new_labels = []
+        for i in range(len(labels)):
+            if labels[i] == 'M' and all([label=='M' for label in labels[i:i+2]]): # 认为4字以下可以视为词，连续2个以上字符是M，四字以上，M->U
+                labels[i] = 'U'
+                for j in range(i+1, len(labels)):
+                    if labels[j] != 'M':
+                        break
+                    labels[j] = 'U'
+        """
         labels = ['U' if label == 'M' else label for label in labels]
     return (chars, labels)
+
 
 def get_vocab_chars_for_dict():
     global vocab_chars
@@ -147,9 +138,9 @@ def get_vocab_chars_for_dict():
         vocab_chars = load_json('data_raw/vocab_chars.json')
         return vocab_chars
 
-def dict_line_processor(line, mode='BMES', extra_info=False):
+
+def dict_line_processor(line, mode: Literal["BMES", "ME"], extra_info=False):
     # NOTE: 词典数据的表示 词[空格]句，其中句中没有空格
-    assert mode in {'BMES', 'EN'}
 
     def get_label(key: str, sentence: str) -> str:
         pieces = sentence.split(key)
@@ -165,22 +156,20 @@ def dict_line_processor(line, mode='BMES', extra_info=False):
             else:
                 labels = w_label.join(['U'*len(piece) for piece in pieces])
         else:
-            w_label = (len(key)-1)*'N'+'E'
+            w_label = (len(key)-1)*'M'+'E'  # NOTE: 只给ME就等价于 连续、断开
             labels = w_label.join(['U'*(len(piece)-1)+'E' if len(piece) >= 1 else '' for piece in pieces])
         return list(labels)
 
     key, line = line.split(' ', maxsplit=1)  # NOTE: 字典训练的line允许了空格
     # 词典匹配不靠谱
-    if len(key)==len(line): #单独的词不要了or len(key)>4 or  or :
+    if len(key) == len(line):  # 单独的词不要了or len(key)>4 or  or :
         return None
-    if len(key)>4: # 长词不要了，这很重要
+    if len(key) > 4:  # 长词不要了，这很重要，这里四字以上的不要了
         return None
-    if len(set(key))!=len(key): # 有相同字的不要了，例如把把
+    if len(set(key)) != len(key):  # 有相同字的不要了，例如把把
         return None
-    #if len(key)==1:
-    #    print(key, line)
-    if not all([c in get_vocab_chars_for_dict() for c in key]): # 有UNK的全部过滤掉，想要模型在不知道的情况下默认分=>UNK时要分
-        if len(key)>1: # 等于1是单字，这个可以有
+    if not all([c in get_vocab_chars_for_dict() for c in key]):  # 有UNK的全部过滤掉，想要模型在不知道的情况下默认分=>UNK时要分
+        if len(key) > 1:  # 等于1是单字，这个可以有
             return None
     chars = line
     labels = get_label(key, line)
@@ -189,7 +178,8 @@ def dict_line_processor(line, mode='BMES', extra_info=False):
     return (chars, labels)
 
 
-def pos_line_processor(line):
+def pos_line_processor(line, mode):
+    # TODO: 按mode分情况
     """ file: 空格分隔的分词训练数据，将超长的样例按最大长度切分为多个样例，
     切分处加入分隔标记，其余token保持原label，
     文本存储为.words文件，标签存储为.label文件
@@ -199,7 +189,8 @@ def pos_line_processor(line):
     return (chars, labels)
 
 
-def seg_pos_line_processor(line):
+def seg_pos_line_processor(line, mode):
+    # TODO: 按mode分情况
     """ file: 空格分隔的分词训练数据，将超长的样例按最大长度切分为多个样例，
     切分处加入分隔标记，其余token保持原label，
     文本存储为.words文件，标签存储为.label文件
@@ -307,10 +298,10 @@ def build_dataloader(config, heads: List[str], batch_size: int):
     #   processor   | seg   punc        pos/seg_pos     dict    [无，仅测试]
     #   head/task   | seg   punc/seg    pos/seg_pos     seg     seg          （这里省略了bound，seg能做的，bound头也可以）
     processors = {
-        'seg': seg_line_processor,
-        'punc': seg_line_processor if getattr(config, 'use_M', False) else functools.partial(punc_line_processor, unified='punc' not in heads),
-        'pos': pos_line_processor if 'seg_pos' not in heads else seg_pos_line_processor,
-        'dict': functools.partial(dict_line_processor, extra_info=getattr(config, 'extra_info', False))
+        'seg': functools.partial(seg_line_processor, mode=config.mode),
+        'punc': functools.partial(seg_line_processor, mode=coonfig.mode) if getattr(config, 'use_M', False) else functools.partial(punc_line_processor, mode=config.mode, use_partial=False),
+        'pos': functools.partial(pos_line_processor, mode=config.mode) if 'seg_pos' not in heads else functools.partial(seg_pos_line_processor, mode=config.mode),
+        'dict': functools.partial(dict_line_processor, mode=config.mode, extra_info=getattr(config, 'extra_info', False))  # NOTE: 字典现在用ME更好！
     }
     # task等价于head
     tasks = {
@@ -346,7 +337,7 @@ def generate_fake():
     # TODO: 难词测试集
     # TODO: 只对多义字进行，“星星” 是可以连着的
     def gen_next(c, choices):
-        if True: # random.random() < 0.9:
+        if True:  # random.random() < 0.9:
             return c
         else:
             return random.choice(choices)
@@ -462,13 +453,12 @@ if __name__ == "__main__":
         path = 'data/seg_ours_train_1611208.txt'
         dataset = LacDataset('seg', path, seg_line_processor, lines_num=0)
         dataloader = DataLoader(dataset, batch_size=1, num_workers=1)
-        # print(next(iter(dataloader.dataset)))
+        print(next(iter(dataloader.dataset)))
         for batch in dataloader:
             pass
             # print(batch)
         print(len(dataloader))
 
-    
     format_raw('data_raw/pos_guiyuan_train.txt')
     exit(0)
     format_raw('data_raw/seg_zuozhuan-a_test.txt')

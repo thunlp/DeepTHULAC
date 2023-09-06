@@ -19,7 +19,7 @@ def spans2segs(sent: str, spans):
     return [sent[span[0]:span[1]+1] for span in spans]
 
 
-def labels2spans(labels: List[str], mode='BMES', vote_pattern = None):
+def labels2spans(labels: List[str], mode, vote_pattern = None):
     assert type(labels) == list
     """ 将标签列表转换为词的范围 """
     if mode == 'BMES':
@@ -62,7 +62,7 @@ def labels2spans(labels: List[str], mode='BMES', vote_pattern = None):
                     begin_offset = i+1
             chunks.append((begin_offset, len(labels)-1))
         return chunks
-    elif mode == 'EN':
+    elif mode == 'ME':
         e_pos = np.argwhere(np.array(labels) == 'E').squeeze(-1)
         s_pos = [0] + list(e_pos[:-1]+1)
         return [(s, e) for s, e in zip(s_pos, e_pos)]
@@ -93,7 +93,7 @@ def spans2pos(sent: str, spans, pos):
     return segs
 
 
-def segs2labels(segs: List[str], mode='BMES') -> List[str]:
+def segs2labels(segs: List[str], mode) -> List[str]:
     """ 将空格分隔的分词数据转换为标签 """
     def get_label(word):
         if mode == 'BMES':
@@ -104,7 +104,7 @@ def segs2labels(segs: List[str], mode='BMES') -> List[str]:
             else:
                 return ['B']+['M']*(len(word) - 2)+['E']
         else:
-            return ['N']*(len(word) - 1) + ['E']
+            return ['M']*(len(word) - 1) + ['E']
     labels = []
     for word in segs:
         labels.extend(get_label(word))
@@ -165,6 +165,5 @@ def parse_label2id(t, label2id):  # 将label字符串转换为label_id，考虑�
     else:  # NOTE 约定用/分隔表示partial label
         partial = [0] * len(label2id)
         for label in t.split('/'):
-            print('ERROR', label, label2id.get(label))
             partial[label2id.get(label)] = 1
         return partial_label2id(partial)
