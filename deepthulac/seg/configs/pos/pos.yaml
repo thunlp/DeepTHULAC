@@ -1,6 +1,6 @@
 # CUDA_VISIBLE_DEVICES=0 python deepthulac/seg/train.py --config_path=deepthulac/seg/configs/pos/pos.yaml
 # 模型相关参数
-pretrained_bert_model: bert-base-chinese
+pretrained_bert_model: /data03/private/chengzhili/pretrain/output/2023-06-09_21-23-00/save # bert-base-chinese
 heads:
   - seg
   - pos
@@ -46,9 +46,9 @@ head_config:
 
 # 训练相关参数
 saved_path: output/pos
-epoch_num: 3
+epoch_num: 1 #3 # 1
 learning_rate: 1.0e-05
-warmup_steps: 2.0
+warmup_steps: 0.1 #2.0 # 0.1
 weight_decay: 0.01
 clip_grad: 5
 
@@ -70,4 +70,4 @@ dev_datasets:
   pos_ours:
     dir: data
     repeat_times: 1
-part_data: False
+part_data: False #False

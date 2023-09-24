@@ -35,11 +35,11 @@ DeepTHULAC基于实验室自研BERT，并利用我们整合的目前世界上规
 ### 分词
 
 ```python
-from deepthulac import LacModel
-lac = LacModel.load(path='', device='cuda:0') # 加载模型，path为模型文件夹路径，空表示自动从huggingface下载，device设置为cuda或cpu
+from deepthulac import LacModel, SEG_MODEL
+lac = LacModel.load(path=SEG_MODEL, device='cuda:0') # 加载模型，path为模型文件夹路径，SEG_MODEL表示自动从huggingface下载，device设置为cuda/cpu/mps
 
 # 句子分词
-sents = ['在石油化工发达的国家已大幅取代了乙炔水合法。', '他在衬衫外套了件外套，出门去了。']
+sents = ['英国科学家艾萨克·牛顿出版《自然哲学的数学原理》，阐述运动定律和万有引力定律。', '他在衬衫外套了件外套，出门去了。']
 results = lac.seg(sents, show_progress_bar=False)['seg']['res']
 print(results)
 
@@ -50,6 +50,19 @@ store_lines([' '.join(w) for w in results], 'results.txt')
 ```
 
 如果由于网络问题无法自动下载模型，可以[从这里手动下载](https://cloud.tsinghua.edu.cn/d/58ad34f5cc1c40a19071/)，path设置为模型路径（如果是Windows系统，路径形如`'X:\\...\\deepthulac-seg-model'`）。
+
+
+### 分词+词性标注
+
+```python
+from deepthulac import LacModel, POS_MODEL
+lac = LacModel.load(path=POS_MODEL, device='cuda:0') # 加载模型，path为模型文件夹路径，POS_MODEL表示自动从huggingface下载，device设置为cuda或cpu
+
+sents = ['英国科学家艾萨克·牛顿出版《自然哲学的数学原理》，阐述运动定律和万有引力定律。', '他在衬衫外套了件外套，出门去了。']
+results = lac.seg(sents, show_progress_bar=False)['pos']['res']
+print(results)
+```
+
 
 ### 加入用户词表
 安装依赖包 `pip install cyac`。
@@ -76,7 +89,6 @@ print(results)
 
 ## TODO
 
-* 词性标注功能开发
 * 分词模型性能调优和方法改进
 * 模型蒸馏压缩，加速
 * 提供多粒度的分词功能

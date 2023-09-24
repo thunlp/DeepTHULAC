@@ -25,6 +25,8 @@ import torch.nn.functional as F
 import functools
 import random
 
+SEG_MODEL = "chengzl18/deepthulac-seg"
+POS_MODEL = "chengzl18/deepthulac-pos"
 
 def kd_ce_loss(logits_S, logits_T, temperature):
     if isinstance(temperature, torch.Tensor) and temperature.dim() > 0:
@@ -607,8 +609,10 @@ class LacModel(nn.Module):
         os.makedirs(path, exist_ok=True)
         logger.info(f"save model to {path}")
         store_yaml(self.model_config, os.path.join(path, "config.yaml"))
-        self.bert.save_pretrained(path)
+        self.bert.config.save_pretrained(path)
+        # self.bert.save_pretrained(path)
         self.tokenizer.save_pretrained(path)
+        torch.save(self.state_dict(), os.path.join(path, 'pytorch_model.bin')) # head的权重保存
 
     @classmethod
     def load(cls, path: str = '', device: Union[str, torch.device, DistributedInfo] = 'cpu', use_f16=False, cache_dir=None):
@@ -617,6 +621,8 @@ class LacModel(nn.Module):
         logging.set_verbosity_error()
         if not path:
             path = snapshot_download(repo_id="chengzl18/deepthulac-seg", cache_dir=cache_dir)
+        elif path == SEG_MODEL or path == POS_MODEL:
+            path = snapshot_download(repo_id=path, cache_dir=cache_dir)
         dinfo = device if isinstance(device, DistributedInfo) else DistributedInfo(device=device)
         config = load_yaml(os.path.join(path, "config.yaml"))
         with warnings.catch_warnings():

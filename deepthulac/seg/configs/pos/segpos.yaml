@@ -1,5 +1,6 @@
+# CUDA_VISIBLE_DEVICES=3 python deepthulac/seg/train.py --config_path=deepthulac/seg/configs/pos/segpos.yaml
 # 模型相关参数
-pretrained_bert_model: custom_pretrained
+pretrained_bert_model: /data03/private/chengzhili/pretrain/output/2023-06-09_21-23-00/save # custom_pretrained
 heads:
   - seg_pos
 seg_labels:
@@ -42,17 +43,27 @@ head_config:
   layers_num: 1
 
 # 训练相关参数
+epoch_num: 1 #3 # 1
 saved_path: output/segpos
 learning_rate: 1.0e-05
+warmup_steps: 0.1 #2.0 # 0.1
 weight_decay: 0.01
 clip_grad: 5
 
 batch_size: 32
 
+
+data_strategy: shuffle_batches
 # 训练数据
 train_datasets:
-  - pos_ours
+  pos_ours:
+    dir: data
+    repeat_times: 1
 dev_datasets:
-  - seg_ours
-  - pos_ours
-part_data: True
+  seg_ours:
+    dir: data
+    repeat_times: 1
+  pos_ours:
+    dir: data
+    repeat_times: 1
+part_data: False

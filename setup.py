@@ -12,7 +12,7 @@ def get_requirements():
 setup(
     name='deepthulac',
     # packages = ['deepthulac'], # this must be the same as the name above
-    version='0.0.9',
+    version='0.1.0',
     description='A High-Performance Lexical Analyzer for Chinese',
     author='THUNLP',
     url='https://github.com/thunlp/DeepTHULAC',
