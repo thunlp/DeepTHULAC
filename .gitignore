@@ -23,3 +23,4 @@ deepthulac/seg/configs/paper
 deepthulac/seg/configs/seg/seg-part.yaml
 deepthulac/seg/configs/seg/seg_punc_dict_pretrain_ancient.yaml
 *[0-9].yaml
+test*
